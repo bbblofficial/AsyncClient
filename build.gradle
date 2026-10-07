@@ -1,29 +1,28 @@
 buildscript {
     repositories {
         mavenCentral()
-        jcenter()
-        maven { name = "forge"; url = "https://maven.minecraftforge.net/" }
-        maven { name = "sonatype"; url = "https://oss.sonatype.org/content/repositories/snapshots/" }
+        maven { url = "https://maven.minecraftforge.net/" }
     }
     dependencies {
         classpath 'net.minecraftforge.gradle:ForgeGradle:2.1-SNAPSHOT'
     }
 }
-
 apply plugin: 'net.minecraftforge.gradle.forge'
 
 version = "1.0.0"
-group = "dev.oryvex.client"
-archivesBaseName = "OryvexClient"
+group = "com.oryvex.asyncload"
+archivesBaseName = "AsyncMenuLoad"
 
 sourceCompatibility = targetCompatibility = '1.8'
-compileJava.options.encoding = 'UTF-8'
+compileJava {
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+}
 
 minecraft {
-    // Minecraft 1.8.8 + Forge. اگر نسخه Forge عوض شد فقط همین دو خط رو تغییر بده.
-    version = "1.8.8-11.15.0.1655"
+    version = "1.8.9-11.15.1.2318-1.8.9"
     runDir = "run"
-    mappings = "stable_20"
+    mappings = "stable_22"
 }
 
 processResources {
@@ -32,7 +31,7 @@ processResources {
 
     from(sourceSets.main.resources.srcDirs) {
         include 'mcmod.info'
-        expand 'version': project.version, 'mcversion': project.minecraft.version
+        expand 'version':project.version, 'mcversion':project.minecraft.version
     }
     from(sourceSets.main.resources.srcDirs) {
         exclude 'mcmod.info'

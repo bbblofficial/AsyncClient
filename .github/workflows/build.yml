@@ -1,78 +1,43 @@
-name: Build OryvexClient
+name: Build Forge Mod 1.8.9
 
 on:
   push:
+    branches: [ "main", "master" ]
   pull_request:
-  workflow_dispatch:
+    branches: [ "main", "master" ]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v3
 
-      - name: Set up JDK 8
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 8
+    - name: Set up JDK 8
+      uses: actions/setup-java@v3
+      with:
+        java-version: '8'
+        distribution: 'temurin'
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('build.gradle') }}
+    - name: Cache Gradle packages
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
 
-      - name: Install Gradle 2.14.1
-        run: |
-          wget -q https://services.gradle.org/distributions/gradle-2.14.1-bin.zip
-          unzip -q gradle-2.14.1-bin.zip -d "$HOME"
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
 
-      - name: Build mod
-        run: $HOME/gradle-2.14.1/bin/gradle setupCIWorkspace build --no-daemon --stacktrace
+    - name: Build Mod with Gradle
+      run: ./gradlew build
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Download Minecraft + Forge + libs
-        run: |
-          mkdir -p dist
-          python3 download_mc.py dist/mc-data
-
-      - name: Verify critical libs
-        run: |
-          echo "--- checking launchwrapper ---"
-          find dist/mc-data/libraries -name "*launchwrapper*"
-          echo "--- checking asm ---"
-          find dist/mc-data/libraries -name "*asm-all*"
-          echo "--- checking forge universal ---"
-          find dist/mc-data/libraries -name "*forge*universal*"
-          echo "--- total ---"
-          du -sh dist
-
-      - name: Package
-        run: |
-          mkdir -p dist/mods
-          JAR=$(ls build/libs/*.jar | grep -v -e sources -e dev | head -n 1)
-          cp "$JAR" dist/mods/OryvexClient.jar
-          cp start.bat dist/start.bat
-          cp launcher.py dist/launcher.py
-
-      - name: Create ZIP
-        run: |
-          cd dist
-          zip -r -q ../OryvexClient.zip .
-          cd ..
-          ls -lh OryvexClient.zip
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OryvexClient
-          path: OryvexClient.zip
-          compression-level: 0
-          retention-days: 7
+    - name: Upload Mod Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: AsyncMenuLoad-1.8.9
+        path: build/libs/*.jar

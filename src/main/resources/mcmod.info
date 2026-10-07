@@ -1,10 +1,16 @@
 [
-  {
-    "modid": "oryvexclient",
-    "name": "OryvexClient",
-    "description": "Clean PvP client for Minecraft 1.8.8 with HUD modules and a custom UI.",
-    "version": "${version}",
-    "mcversion": "${mcversion}",
-    "authorList": ["Oryvex"]
-  }
+{
+  "modid": "asyncload",
+  "name": "Async Menu Load",
+  "description": "Lazy loads Resource Packs and Shader menus without freezing the game.",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "url": "",
+  "updateUrl": "",
+  "authorList": ["Oryvex"],
+  "credits": "Non-blocking UI integration",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": []
+}
 ]
