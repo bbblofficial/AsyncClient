@@ -6,3 +6,7 @@ eclipse/
 *.iml
 out/
 dist/
+
+# OryvexClient launcher data
+mc-data/
+mods/

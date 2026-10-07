@@ -25,33 +25,26 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('build.gradle') }}
 
-      - name: Install Gradle 2.14.1
+      - name: Install Gradle 2.14.1 (required by ForgeGradle 2.1)
         run: |
           wget -q https://services.gradle.org/distributions/gradle-2.14.1-bin.zip
           unzip -q gradle-2.14.1-bin.zip -d "$HOME"
 
-      - name: Build mod
+      - name: Build
         run: $HOME/gradle-2.14.1/bin/gradle setupCIWorkspace build --no-daemon --stacktrace
 
       - name: Package
         run: |
-          mkdir -p dist/mods
+          mkdir -p dist
           JAR=$(ls build/libs/*.jar | grep -v -e sources -e dev | head -n 1)
           echo "Using $JAR"
-          cp "$JAR" dist/mods/OryvexClient.jar
+          cp "$JAR" dist/client.jar
           cp start.bat dist/start.bat
-          cp launcher.py dist/launcher.py
-          ls -lh dist dist/mods
-
-      - name: Create ZIP
-        run: |
-          cd dist
-          zip -r ../OryvexClient.zip .
-          cd ..
-          ls -lh OryvexClient.zip
+          wget -q -O dist/forge-installer.jar https://maven.minecraftforge.net/net/minecraftforge/forge/1.8.8-11.15.0.1655/forge-1.8.8-11.15.0.1655-installer.jar || (echo "Forge installer download failed" && rm -f dist/forge-installer.jar)
+          ls -lh dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OryvexClient
-          path: OryvexClient.zip
+          path: dist/
