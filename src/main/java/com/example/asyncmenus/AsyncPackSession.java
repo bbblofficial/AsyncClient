@@ -90,7 +90,7 @@ final class AsyncPackSession {
         final Set<String> selectedKeys = new HashSet<String>();
         for (ResourcePackRepository.Entry e : repo.getRepositoryEntries()) selectedKeys.add(e.toString());
 
-        int threads = Math.max(2, Math.min(4, Runtime.availableProcessors()));
+        int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
         pool = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "AsyncMenus-PackLoader");
             t.setDaemon(true);
