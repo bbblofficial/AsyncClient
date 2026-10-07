@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Download Minecraft 1.8.8 + Forge + all Forge libraries + vanilla libs (NO assets)."""
-import hashlib, io, json, os, sys, urllib.request, zipfile
+"""Download Minecraft 1.8.8 + Forge + all libraries (NO assets)."""
+import hashlib, json, os, sys, urllib.request, zipfile
 
 VERSION = "1.8.8"
 FORGE_VERSION = "1.8.8-11.15.0.1655"
@@ -50,47 +50,103 @@ def maven_path(n):
     fn = f"{a}-{v}" + (f"-{cls}" if cls else "") + f".{ext}"
     return "/".join(g.split(".")) + f"/{a}/{v}/{fn}"
 
-def get_lib_url(name, base="https://libraries.minecraft.net/"):
-    """Build fallback URL for maven coordinate."""
-    return base + maven_path(name)
-
-def install_libs_from_json(vj, libs, forge=False):
-    """Download all libraries from a version JSON."""
+def install_libs_from_json(vj, libs):
+    """Download all libraries that have an artifact URL + all natives."""
     count = 0
+    skipped = 0
     for lib in vj.get("libraries", []):
-        # skip native-only entries when not forge
-        dl = lib.get("downloads", {})
+        dl = lib.get("downloads") or {}
+
+        # 1) main artifact (only if the JSON provides it)
         art = dl.get("artifact")
         if art and art.get("url"):
-            url = art["url"]
-            sha1 = art.get("sha1")
+            try:
+                dest = os.path.join(libs, maven_path(lib["name"]))
+                if not os.path.exists(dest):
+                    download(art["url"], dest, art.get("sha1"))
+                    count += 1
+            except Exception as e:
+                log(f"  ! artifact {lib['name']}: {e}")
         else:
-            # forge-style: build URL from maven
-            name = lib["name"]
-            url = get_lib_url(name)
-            sha1 = None
-        try:
-            dest = os.path.join(libs, maven_path(lib["name"]))
-            # handle natives
-            for k, v in (dl.get("classifiers") or {}).items():
-                if v.get("url"):
-                    npath = maven_path(lib["name"] + ":" + k)
-                    ndest = os.path.join(libs, npath)
+            # No artifact in JSON -> it's a native-only or forge-style lib.
+            # Try maven fallback ONLY if the lib has no natives field
+            # (otherwise the artifact genuinely doesn't exist).
+            if not lib.get("natives"):
+                name = lib["name"]
+                url = "https://libraries.minecraft.net/" + maven_path(name)
+                try:
+                    dest = os.path.join(libs, maven_path(name))
+                    if not os.path.exists(dest):
+                        download(url, dest)
+                        count += 1
+                except Exception:
+                    skipped += 1  # forge libs also served from forge maven below
+
+        # 2) natives (classifiers)
+        for k, v in (dl.get("classifiers") or {}).items():
+            if not v.get("url"): continue
+            try:
+                ndest = os.path.join(libs, maven_path(lib["name"] + ":" + k))
+                if not os.path.exists(ndest):
                     download(v["url"], ndest, v.get("sha1"))
                     count += 1
-            # skip if already exists
-            if not os.path.exists(dest):
-                download(url, dest, sha1)
-                count += 1
-        except Exception as e:
-            log(f"  ! lib {lib['name']}: {e}")
+            except Exception as e:
+                log(f"  ! native {lib['name']}:{k}: {e}")
+
+    return count, skipped
+
+def install_forge_libs(forge_vj, libs):
+    """Forge versionInfo libraries usually have no downloads object;
+    we build URLs from maven coordinates via maven.minecraftforge.net."""
+    count = 0
+    for lib in forge_vj.get("libraries", []):
+        name = lib["name"]
+        dl = lib.get("downloads") or {}
+        # prefer explicit URL if present
+        art = dl.get("artifact")
+        urls = []
+        if art and art.get("url"):
+            urls.append((art["url"], art.get("sha1")))
+        else:
+            # forge libs are on maven.minecraftforge.net (and also on
+            # libraries.minecraft.net for the vanilla ones)
+            urls.append(("https://maven.minecraftforge.net/" + maven_path(name), None))
+            urls.append(("https://libraries.minecraft.net/" + maven_path(name), None))
+
+        dest = os.path.join(libs, maven_path(name))
+        if os.path.exists(dest):
+            continue
+
+        ok = False
+        for url, sha in urls:
+            try:
+                download(url, dest, sha)
+                ok = True
+                break
+            except Exception:
+                continue
+        if ok:
+            count += 1
+        else:
+            log(f"  ! forge lib missing: {name}")
+
+        # natives inside forge libs (rare)
+        for k, v in (dl.get("classifiers") or {}).items():
+            if not v.get("url"): continue
+            try:
+                ndest = os.path.join(libs, maven_path(name + ":" + k))
+                if not os.path.exists(ndest):
+                    download(v["url"], ndest, v.get("sha1"))
+                    count += 1
+            except Exception as e:
+                log(f"  ! native {name}:{k}: {e}")
     return count
 
 def main(target):
     libs = os.path.join(target, "libraries")
     versions = os.path.join(target, "versions")
 
-    # --- vanilla ---
+    # ---------- vanilla ----------
     log("Fetching manifest ...")
     m = http_json(MANIFEST_URL)
     vurl = next(v["url"] for v in m["versions"] if v["id"] == VERSION)
@@ -101,30 +157,48 @@ def main(target):
     download(c["url"], os.path.join(versions, VERSION, f"{VERSION}.jar"), c.get("sha1"))
 
     log("Downloading vanilla libraries ...")
-    n = install_libs_from_json(vj, libs)
-    log(f"  -> {n} libs")
+    n, s = install_libs_from_json(vj, libs)
+    log(f"  -> {n} downloaded, {s} skipped")
 
-    # --- Forge installer ---
+    # ---------- forge ----------
     log("Downloading Forge installer ...")
     installer_tmp = os.path.join(target, "_forge_installer.jar")
     download(FORGE_INSTALLER_URL, installer_tmp)
 
-    log("Extracting Forge version.json ...")
+    log("Extracting Forge install_profile.json ...")
     with zipfile.ZipFile(installer_tmp) as z:
-        version_json_bytes = z.read("version.json")
-    forge_vj = json.loads(version_json_bytes.decode("utf-8"))
+        names = z.namelist()
+        forge_vj = None
+        if "install_profile.json" in names:
+            profile = json.loads(z.read("install_profile.json").decode("utf-8"))
+            # newer installers nest a full version JSON under "versionInfo"
+            if isinstance(profile.get("versionInfo"), dict):
+                forge_vj = profile["versionInfo"]
+            # older ones put it under "version"
+            elif isinstance(profile.get("version"), dict):
+                forge_vj = profile["version"]
+        if forge_vj is None and "version.json" in names:
+            forge_vj = json.loads(z.read("version.json").decode("utf-8"))
+        if forge_vj is None:
+            raise RuntimeError(
+                "Could not find Forge version JSON inside installer. "
+                f"Files: {names[:20]}"
+            )
+
+    log(f"Found Forge version: {forge_vj.get('id')} "
+        f"({len(forge_vj.get('libraries', []))} libs)")
 
     log("Downloading Forge libraries ...")
-    n = install_libs_from_json(forge_vj, libs, forge=True)
-    log(f"  -> {n} libs")
+    n = install_forge_libs(forge_vj, libs)
+    log(f"  -> {n} downloaded")
 
-    # --- Forge universal jar ---
+    # ---------- Forge universal jar ----------
     log("Downloading Forge universal ...")
     download(FORGE_UNIVERSAL_URL,
              os.path.join(libs, "net/minecraftforge/forge",
                           FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar"))
 
-    # --- cleanup ---
+    # cleanup
     if os.path.exists(installer_tmp):
         os.remove(installer_tmp)
 

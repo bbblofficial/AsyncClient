@@ -43,6 +43,17 @@ jobs:
           mkdir -p dist
           python3 download_mc.py dist/mc-data
 
+      - name: Verify critical libs
+        run: |
+          echo "--- checking launchwrapper ---"
+          find dist/mc-data/libraries -name "*launchwrapper*"
+          echo "--- checking asm ---"
+          find dist/mc-data/libraries -name "*asm-all*"
+          echo "--- checking forge universal ---"
+          find dist/mc-data/libraries -name "*forge*universal*"
+          echo "--- total ---"
+          du -sh dist
+
       - name: Package
         run: |
           mkdir -p dist/mods
@@ -50,9 +61,6 @@ jobs:
           cp "$JAR" dist/mods/OryvexClient.jar
           cp start.bat dist/start.bat
           cp launcher.py dist/launcher.py
-          echo "--- sizes ---"
-          du -sh dist
-          find dist/mc-data/libraries -name "*launchwrapper*" -o -name "*asm-all*" | head
 
       - name: Create ZIP
         run: |
