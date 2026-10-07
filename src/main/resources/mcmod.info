@@ -1,16 +1,17 @@
 [
-{
-  "modid": "asyncload",
-  "name": "Async Menu Load",
-  "description": "Lazy loads Resource Packs and Shader menus without freezing the game.",
-  "version": "${version}",
-  "mcversion": "${mcversion}",
-  "url": "",
-  "updateUrl": "",
-  "authorList": ["Oryvex"],
-  "credits": "Non-blocking UI integration",
-  "logoFile": "",
-  "screenshots": [],
-  "dependencies": []
-}
+  {
+    "modid": "asyncmenus",
+    "name": "Async Menus",
+    "description": "Loads the Resource Packs menu asynchronously: the screen opens instantly and packs appear one by one.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "authorList": ["YourName"],
+    "credits": "",
+    "logoFile": "",
+    "url": "",
+    "updateUrl": "",
+    "parent": "",
+    "screenshots": [],
+    "dependencies": []
+  }
 ]
