@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OryvexClient Fixer
-Sets up everything so the GitHub Actions ZIP contains the full Minecraft.
-Run from project root:  python fixer.py
+OryvexClient Fixer (v2)
 """
 import shutil
 from pathlib import Path
@@ -11,9 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).parent.resolve()
 
 # ===========================================================================
-# 1. launcher.py — uses bundled mc-data/, no downloads
+# launcher.py
 # ===========================================================================
-
 LAUNCHER_PY = r'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """OryvexClient Launcher (offline, bundled)."""
@@ -98,17 +95,13 @@ def launch():
     client_jar = os.path.join(VERSIONS, VERSION, f"{VERSION}.jar")
     forge_jar = os.path.join(LIBS, "net", "minecraftforge", "forge",
                              FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar")
-
     if not os.path.exists(client_jar):
         raise RuntimeError(f"Missing {client_jar}. Re-extract the ZIP.")
     if not os.path.exists(forge_jar):
         raise RuntimeError(f"Missing {forge_jar}. Re-extract the ZIP.")
-
     extract_natives()
-
     java = find_java()
     cp = build_classpath(client_jar, forge_jar)
-
     jvm_args = [
         java, "-Xmx2G", "-Xms512M",
         f"-Djava.library.path={NATIVES}",
@@ -130,7 +123,6 @@ def launch():
         "--userType", "legacy",
         "--tweakClass", "net.minecraftforge.fml.common.launcher.FMLTweaker",
     ]
-
     log("Launching Minecraft ...")
     try:
         subprocess.run(jvm_args + game_args, cwd=ROOT)
@@ -149,9 +141,8 @@ if __name__ == "__main__":
 '''
 
 # ===========================================================================
-# 2. start.bat
+# start.bat
 # ===========================================================================
-
 START_BAT = r'''@echo off
 setlocal
 title OryvexClient Launcher
@@ -187,18 +178,13 @@ exit /b 1
 '''
 
 # ===========================================================================
-# 3. download_mc.py — runs in CI, fills dist/mc-data/
+# download_mc.py  — with User-Agent fix
 # ===========================================================================
-
 DOWNLOAD_MC_PY = r'''#!/usr/bin/env python3
-"""
-Download Minecraft 1.8.8 + Forge + libraries + assets into a target directory.
-Usage: python download_mc.py <target_dir>
-"""
+"""Download Minecraft 1.8.8 + Forge + libraries + assets into a target directory."""
 import hashlib
 import json
 import os
-import platform
 import sys
 import urllib.request
 
@@ -210,6 +196,10 @@ FORGE_UNIVERSAL_URL = (
 )
 MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
 RESOURCES_URL = "https://resources.download.minecraft.net"
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/120.0 Safari/537.36")
 
 
 def log(msg):
@@ -224,12 +214,30 @@ def sha1_file(path):
     return h.hexdigest()
 
 
+def _request(url):
+    return urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept": "*/*",
+    })
+
+
 def download(url, dest, sha1=None):
     if os.path.exists(dest) and sha1 and sha1_file(dest) == sha1:
         return
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
-    urllib.request.urlretrieve(url, tmp)
+    try:
+        with urllib.request.urlopen(_request(url), timeout=60) as resp, \
+                open(tmp, "wb") as f:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     if sha1 and sha1_file(tmp) != sha1:
         os.remove(tmp)
         raise RuntimeError(f"SHA1 mismatch: {url}")
@@ -239,7 +247,7 @@ def download(url, dest, sha1=None):
 
 
 def http_json(url):
-    with urllib.request.urlopen(url) as r:
+    with urllib.request.urlopen(_request(url), timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -265,13 +273,11 @@ def main(target):
     version_url = next(v["url"] for v in manifest["versions"] if v["id"] == VERSION)
     vjson = http_json(version_url)
 
-    # --- client.jar ---
     client = vjson["downloads"]["client"]
     client_dest = os.path.join(versions, VERSION, f"{VERSION}.jar")
     log("Downloading client.jar ...")
     download(client["url"], client_dest, client.get("sha1"))
 
-    # --- libraries (artifact + natives for all OSes) ---
     log("Downloading libraries ...")
     for lib in vjson["libraries"]:
         downloads = lib.get("downloads", {})
@@ -287,13 +293,11 @@ def main(target):
                 rel = maven_to_path(lib["name"] + ":" + os_key)
                 download(cls["url"], os.path.join(libs, rel), cls.get("sha1"))
 
-    # --- Forge ---
     log("Downloading Forge universal ...")
     forge_dest = os.path.join(libs, "net", "minecraftforge", "forge",
                               FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar")
     download(FORGE_UNIVERSAL_URL, forge_dest)
 
-    # --- assets ---
     asset_index = vjson.get("assetIndex")
     if asset_index:
         index_path = os.path.join(assets, "indexes", asset_index["id"] + ".json")
@@ -303,8 +307,7 @@ def main(target):
             index = json.load(f)
         total = len(index["objects"])
         log(f"Downloading {total} assets ...")
-        done = 0
-        skipped = 0
+        done = skipped = 0
         for name, obj in index["objects"].items():
             h = obj["hash"]
             prefix = h[:2]
@@ -333,9 +336,8 @@ if __name__ == "__main__":
 '''
 
 # ===========================================================================
-# 4. .github/workflows/build.yml
+# workflow
 # ===========================================================================
-
 WORKFLOW_YML = r'''name: Build OryvexClient
 
 on:
@@ -417,10 +419,6 @@ dist/
 """
 
 
-# ===========================================================================
-# Helpers
-# ===========================================================================
-
 def write(path, content, is_bat=False):
     path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -447,7 +445,7 @@ def append_once(path, marker, content):
 
 
 def main():
-    print("OryvexClient Fixer")
+    print("OryvexClient Fixer v2")
     print(f"Project root: {ROOT}\n")
 
     print("[1/5] launcher.py")
@@ -468,9 +466,8 @@ def main():
     print("\nDone.")
     print("\nNext:")
     print("  git add .")
-    print('  git commit -m "bundle minecraft into artifact"')
+    print('  git commit -m "fix: user-agent for forge maven"')
     print("  git push")
-    print("\nThen Actions -> download OryvexClient.zip (~150-200 MB)")
 
 
 if __name__ == "__main__":
