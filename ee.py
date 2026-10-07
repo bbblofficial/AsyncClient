@@ -1,36 +1,36 @@
 #!/usr/bin/env python3
 """
-fixer.py — repair the GeminiClient / Oryvex repo and install a custom
-Minecraft loading screen.
+fixer.py — repair the GeminiClient / Oryvex repo, install a custom
+loading screen, and broadcast progress from every startup phase.
 
-What this script does, in order
--------------------------------
-1.  Backs the whole repository up to a timestamped .zip next to it.
-2.  Deletes the broken duplicate mod  src/main/java/com/oryvex/  — this
-    is the package whose AsyncResourcePackGui.java currently fails with
-    "availableResourcePacks has private access in GuiScreenResourcePacks"
-    and aborts :compileJava.
-3.  Adds a custom loading screen that replaces the vanilla Mojang splash:
-        src/main/java/com/example/asyncmenus/loading/CustomLoadingScreen.java
-        src/main/java/com/example/asyncmenus/loading/LoadingScreenHook.java
-4.  Rewrites src/main/java/com/example/asyncmenus/AsyncMenus.java so it
-    installs the loading screen during FMLPreInitializationEvent and still
-    registers the existing resource-pack handlers on FMLInitializationEvent.
-5.  Generates a placeholder logo PNG at
-        src/main/resources/assets/asyncmenus/textures/gui/custom_loading.png
-    (unless you pass --custom-logo /path/to/your.png, in which case that
-    file is copied instead).
-6.  Normalises .github/workflows/build.yml (correct indentation for the
-    Upload step, consistent artifact name/path).
-7.  Sanity-checks that nothing under src/ still imports com.oryvex.*.
+What it does
+------------
+1.  Backs the repo up to a timestamped .zip next to it.
+2.  Deletes the broken duplicate mod  src/main/java/com/oryvex/.
+3.  Adds a complete, phase-aware loading screen system:
+        loading/LoadingPhase.java
+        loading/LoadingScreenHook.java
+        loading/CustomLoadingScreen.java
+        loading/LoadingProgress.java
+        loading/LoadingProgressHandler.java
+        loading/TerrainLoadListener.java
+        core/LoadingScreenTransformer.java
+        core/AsyncMenusLoadingPlugin.java
+4.  Rewrites  AsyncMenus.java  to install the hook on preInit and to
+    register the progress handlers.
+5.  Generates a placeholder logo PNG (or copies --custom-logo).
+6.  Adds the FMLCorePlugin manifest attributes to build.gradle.
+7.  Normalises .github/workflows/build.yml.
+8.  Validates that no file still imports com.oryvex.*.
 
 Usage
 -----
-    python fixer.py                          # run in-place next to the script
+    python fixer.py
     python fixer.py --repo "C:\\path\\to\\repo"
     python fixer.py --custom-logo my_logo.png
     python fixer.py --dry-run
     python fixer.py --no-backup
+    python fixer.py --no-coremod        # skip the ASM transformer
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import os
+import re
 import shutil
 import struct
 import sys
@@ -46,30 +47,123 @@ import zlib
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths inside the repo
+# Paths
 # ---------------------------------------------------------------------------
 
 BROKEN_PACKAGE_REL = Path("src/main/java/com/oryvex")
 
-PKG_ROOT            = Path("src/main/java/com/example/asyncmenus")
-LOADING_PKG         = PKG_ROOT / "loading"
-CUSTOM_LOADING_REL  = LOADING_PKG / "CustomLoadingScreen.java"
-LOADING_HOOK_REL    = LOADING_PKG / "LoadingScreenHook.java"
-ASYNC_MENUS_REL     = PKG_ROOT / "AsyncMenus.java"
+PKG_ROOT    = Path("src/main/java/com/example/asyncmenus")
+LOADING_PKG = PKG_ROOT / "loading"
+CORE_PKG    = PKG_ROOT / "core"
+
+ASYNC_MENUS_REL = PKG_ROOT / "AsyncMenus.java"
 
 TEXTURE_REL = Path(
     "src/main/resources/assets/asyncmenus/textures/gui/custom_loading.png"
 )
 
 WORKFLOW_REL = Path(".github/workflows/build.yml")
+BUILD_GRADLE_REL = Path("build.gradle")
 
 ARTIFACT_NAME    = "AsyncMenus-jar"
 ARTIFACT_PATH    = "build/libs/*.jar"
 ARTIFACT_EXCLUDE = "!build/libs/*-sources.jar"
 
+CORE_PLUGIN_CLASS = "com.example.asyncmenus.core.AsyncMenusLoadingPlugin"
+
 # ---------------------------------------------------------------------------
-# File contents
+# Java sources
 # ---------------------------------------------------------------------------
+
+LOADING_PHASE_JAVA = r"""package com.example.asyncmenus.loading;
+
+/** Every distinct startup / reload phase we report progress for. */
+public enum LoadingPhase {
+    MOD_CONSTRUCTION   ("Constructing mods",      5),
+    PRE_INIT           ("Pre-initializing mods", 10),
+    INIT               ("Initializing mods",     20),
+    POST_INIT          ("Post-initializing mods",30),
+    RESOURCE_LOAD      ("Loading resources",     45),
+    START_GAME         ("Starting game",         60),
+    TERRAIN            ("Building terrain",      75),
+    JOINING_WORLD      ("Joining world",         85),
+    RELOADING          ("Reloading resources",   50),
+    DONE               ("Done",                 100);
+
+    public final String label;
+    public final int basePercent;
+
+    LoadingPhase(String label, int basePercent) {
+        this.label = label;
+        this.basePercent = basePercent;
+    }
+}
+"""
+
+LOADING_PROGRESS_JAVA = r"""package com.example.asyncmenus.loading;
+
+/**
+ * Global, thread-safe progress bus. Any code can post a phase and a
+ * sub-progress (0..1) inside that phase; the renderer on the client
+ * thread reads the latest values.
+ */
+public final class LoadingProgress {
+
+    private static volatile LoadingPhase phase = LoadingPhase.MOD_CONSTRUCTION;
+    private static volatile float subProgress = 0f;
+    private static volatile String customMessage = "";
+    private static volatile boolean screenActive = false;
+
+    private LoadingProgress() {}
+
+    public static void setPhase(LoadingPhase p) {
+        phase = p;
+        subProgress = 0f;
+        customMessage = "";
+    }
+
+    public static void setPhase(LoadingPhase p, float sub) {
+        phase = p;
+        subProgress = clamp(sub);
+    }
+
+    public static void setSub(float sub) {
+        subProgress = clamp(sub);
+    }
+
+    public static void setMessage(String msg) {
+        customMessage = msg == null ? "" : msg;
+    }
+
+    public static LoadingPhase getPhase()        { return phase; }
+    public static float getSubProgress()         { return subProgress; }
+    public static String getCustomMessage()      { return customMessage; }
+    public static boolean isScreenActive()       { return screenActive; }
+    public static void setScreenActive(boolean b) { screenActive = b; }
+
+    /** Absolute 0..100 percent across all phases. */
+    public static int getPercent() {
+        LoadingPhase p = phase;
+        LoadingPhase[] all = LoadingPhase.values();
+        int nextBase = 100;
+        for (int i = 0; i < all.length; i++) {
+            if (all[i] == p) {
+                nextBase = (i + 1 < all.length) ? all[i + 1].basePercent : 100;
+                break;
+            }
+        }
+        float span = nextBase - p.basePercent;
+        return Math.max(0, Math.min(100,
+                Math.round(p.basePercent + span * subProgress)));
+    }
+
+    private static float clamp(float f) {
+        if (f < 0f) return 0f;
+        if (f > 1f) return 1f;
+        return f;
+    }
+}
+"""
 
 CUSTOM_LOADING_JAVA = r"""package com.example.asyncmenus.loading;
 
@@ -86,32 +180,52 @@ import org.lwjgl.opengl.Display;
 import org.lwjgl.opengl.GL11;
 
 /**
- * Replaces vanilla's Mojang loading screen.
- * Extends LoadingScreenRenderer so it can be dropped into Minecraft.loadingScreen.
+ * Custom loading screen shown from the earliest possible frame until
+ * the main menu / a world is ready. Draws whatever LoadingProgress
+ * currently holds, so it works for every startup phase.
  */
 public class CustomLoadingScreen extends LoadingScreenRenderer {
 
-    /** Replace this PNG with your own logo. Put it under src/main/resources. */
     private static final ResourceLocation LOGO =
             new ResourceLocation("asyncmenus", "textures/gui/custom_loading.png");
 
     private final Minecraft mc;
-    private String title = "";
-    private String message = "";
-    private int progress;
 
     public CustomLoadingScreen(Minecraft mc) {
         super(mc);
         this.mc = mc;
     }
 
-    @Override public void resetProgressAndMessage(String message) { this.title = message; this.message = ""; render(); }
-    @Override public void displaySavingString(String message)     { this.message = message;                  render(); }
-    @Override public void setLoadingProgress(int progress)        { this.progress = progress;                render(); }
-    @Override public void setDoneWorking()                        { /* stop drawing */ }
+    // --- LoadingScreenRenderer API used by vanilla --------------------
 
-    // -----------------------------------------------------------------
-    // Rendering
+    @Override public void resetProgressAndMessage(String message) {
+        LoadingProgress.setMessage(message);
+        LoadingProgress.setPhase(LoadingPhase.START_GAME);
+        render();
+    }
+
+    @Override public void displaySavingString(String message) {
+        LoadingProgress.setMessage(message);
+        render();
+    }
+
+    @Override public void setLoadingProgress(int progress) {
+        LoadingProgress.setSub(progress / 100f);
+        render();
+    }
+
+    @Override public void setDoneWorking() {
+        LoadingProgress.setScreenActive(false);
+    }
+
+    // --- Called by the progress handler each client tick --------------
+
+    /** Render one frame. Safe to call from the client thread only. */
+    public void tick() {
+        if (!LoadingProgress.isScreenActive()) return;
+        render();
+    }
+
     // -----------------------------------------------------------------
 
     private void render() {
@@ -123,9 +237,9 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
 
         // Background
         GlStateManager.clearColor(0.06F, 0.06F, 0.08F, 1.0F);
-        GlStateManager.clear(16640); // GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
+        GlStateManager.clear(16640);
 
-        // Orthographic 2D projection
+        // 2D projection
         GlStateManager.matrixMode(GL11.GL_PROJECTION);
         GlStateManager.loadIdentity();
         GlStateManager.ortho(0.0D, sw, sh, 0.0D, 1000.0D, 3000.0D);
@@ -144,25 +258,40 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         try {
             mc.getTextureManager().bindTexture(LOGO);
             int lw = 128, lh = 128;
-            drawTexturedQuad((sw - lw) / 2, (sh - lh) / 2 - 40, lw, lh);
-        } catch (Throwable ignored) { /* missing texture - text only */ }
+            drawTexturedQuad((sw - lw) / 2, (sh - lh) / 2 - 50, lw, lh);
+        } catch (Throwable ignored) {}
 
         FontRenderer fr = mc.fontRendererObj;
 
-        if (!title.isEmpty())
-            fr.drawStringWithShadow(title, (sw - fr.getStringWidth(title)) / 2, sh / 2 + 60, 0xFFFFFF);
-        if (!message.isEmpty())
-            fr.drawStringWithShadow(message, (sw - fr.getStringWidth(message)) / 2, sh / 2 + 76, 0xAAAAAA);
+        LoadingPhase phase = LoadingProgress.getPhase();
+        int percent = LoadingProgress.getPercent();
+        String custom = LoadingProgress.getCustomMessage();
+
+        // Title (phase label)
+        String title = phase.label;
+        fr.drawStringWithShadow(title,
+                (sw - fr.getStringWidth(title)) / 2, sh / 2 + 50, 0xFFFFFF);
+
+        // Custom message from vanilla or mods
+        if (!custom.isEmpty()) {
+            fr.drawStringWithShadow(custom,
+                    (sw - fr.getStringWidth(custom)) / 2, sh / 2 + 66, 0xAAAAAA);
+        }
+
+        // Percent
+        String pctStr = percent + "%";
+        fr.drawStringWithShadow(pctStr,
+                (sw - fr.getStringWidth(pctStr)) / 2, sh / 2 + 82, 0xCCCCCC);
 
         // Progress bar
-        int barW = 200, barH = 4;
+        int barW = 240, barH = 5;
         int barX = (sw - barW) / 2;
         int barY = sh / 2 + 100;
 
         drawRect(barX - 1, barY - 1, barX + barW + 1, barY + barH + 1, 0xFF333333);
         drawRect(barX, barY, barX + barW, barY + barH, 0xFF555555);
-        if (progress > 0) {
-            int fw = barW * Math.min(progress, 100) / 100;
+        if (percent > 0) {
+            int fw = barW * percent / 100;
             drawRect(barX, barY, barX + fw, barY + barH, 0xFF4FC3F7);
         }
 
@@ -205,7 +334,7 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
 }
 """
 
-LOADING_HOOK_JAVA = r"""package com.example.asyncmenus.loading;
+LOADING_SCREEN_HOOK_JAVA = r"""package com.example.asyncmenus.loading;
 
 import net.minecraft.client.LoadingScreenRenderer;
 import net.minecraft.client.Minecraft;
@@ -214,10 +343,15 @@ import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Field;
 
-/** Swaps the vanilla loading screen for CustomLoadingScreen. */
+/**
+ * Installs CustomLoadingScreen into Minecraft.loadingScreen as early
+ * as possible (preInit). Also keeps a static reference so the tick
+ * handler can force redraws while other startup work runs.
+ */
 public final class LoadingScreenHook {
 
     private static final Logger LOG = LogManager.getLogger("asyncmenus");
+    private static CustomLoadingScreen activeScreen;
     private static boolean installed;
 
     private LoadingScreenHook() {}
@@ -235,31 +369,155 @@ public final class LoadingScreenHook {
         try {
             Field f = findField();
             f.setAccessible(true);
-            if (f.get(mc) instanceof CustomLoadingScreen) return;
-
-            f.set(mc, new CustomLoadingScreen(mc));
+            if (f.get(mc) instanceof CustomLoadingScreen) {
+                activeScreen = (CustomLoadingScreen) f.get(mc);
+                return;
+            }
+            activeScreen = new CustomLoadingScreen(mc);
+            f.set(mc, activeScreen);
+            LoadingProgress.setScreenActive(true);
             LOG.info("Custom loading screen installed");
         } catch (Throwable t) {
             LOG.error("Could not install custom loading screen; vanilla will be used", t);
         }
     }
 
+    public static CustomLoadingScreen getActiveScreen() { return activeScreen; }
+
     private static Field findField() throws NoSuchFieldException {
         try { return Minecraft.class.getDeclaredField("loadingScreen"); }  catch (NoSuchFieldException ignored) {}
         try { return Minecraft.class.getDeclaredField("field_71461_s"); } catch (NoSuchFieldException ignored) {}
-
-        // Last resort: first field whose type is LoadingScreenRenderer
         for (Field f : Minecraft.class.getDeclaredFields())
             if (f.getType() == LoadingScreenRenderer.class) return f;
-
         throw new NoSuchFieldException("Minecraft.loadingScreen not found");
+    }
+}
+"""
+
+LOADING_PROGRESS_HANDLER_JAVA = r"""package com.example.asyncmenus.loading;
+
+import net.minecraftforge.fml.common.event.FMLConstructionEvent;
+import net.minecraftforge.fml.common.event.FMLInitializationEvent;
+import net.minecraftforge.fml.common.event.FMLPostInitializationEvent;
+import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
+import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+import net.minecraftforge.fml.common.gameevent.TickEvent;
+import net.minecraftforge.client.event.GuiOpenEvent;
+import net.minecraft.client.gui.GuiMainMenu;
+import net.minecraftforge.fml.relauncher.Side;
+import net.minecraftforge.fml.relauncher.SideOnly;
+
+/**
+ * Subscribes to Forge's startup events and pushes them into the global
+ * LoadingProgress bus. Also forces a redraw each client tick while the
+ * loading screen is active.
+ */
+@SideOnly(Side.CLIENT)
+public class LoadingProgressHandler {
+
+    private boolean showedPreInit;
+    private boolean showedInit;
+    private boolean showedPostInit;
+
+    @SubscribeEvent
+    public void onConstruct(FMLConstructionEvent e) {
+        LoadingProgress.setPhase(LoadingPhase.MOD_CONSTRUCTION, 0.5f);
+    }
+
+    @SubscribeEvent
+    public void onPreInit(FMLPreInitializationEvent e) {
+        if (showedPreInit) return;
+        showedPreInit = true;
+        LoadingProgress.setPhase(LoadingPhase.PRE_INIT, 0.1f);
+    }
+
+    @SubscribeEvent
+    public void onInit(FMLInitializationEvent e) {
+        if (showedInit) return;
+        showedInit = true;
+        LoadingProgress.setPhase(LoadingPhase.INIT, 0.1f);
+    }
+
+    @SubscribeEvent
+    public void onPostInit(FMLPostInitializationEvent e) {
+        if (showedPostInit) return;
+        showedPostInit = true;
+        LoadingProgress.setPhase(LoadingPhase.POST_INIT, 0.1f);
+    }
+
+    /** Force a redraw each client tick while we own the screen. */
+    @SubscribeEvent
+    public void onClientTick(TickEvent.ClientTickEvent e) {
+        if (e.phase != TickEvent.Phase.END) return;
+        CustomLoadingScreen screen = LoadingScreenHook.getActiveScreen();
+        if (screen == null || !LoadingProgress.isScreenActive()) return;
+        try { screen.tick(); } catch (Throwable ignored) {}
+    }
+
+    /** Hide the overlay once the main menu appears. */
+    @SubscribeEvent
+    public void onGuiOpen(GuiOpenEvent e) {
+        if (e.gui instanceof GuiMainMenu) {
+            LoadingProgress.setPhase(LoadingPhase.DONE);
+            LoadingProgress.setScreenActive(false);
+        }
+    }
+}
+"""
+
+TERRAIN_LOAD_LISTENER_JAVA = r"""package com.example.asyncmenus.loading;
+
+import net.minecraftforge.client.event.GuiScreenEvent;
+import net.minecraftforge.event.world.WorldEvent;
+import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+import net.minecraftforge.fml.relauncher.Side;
+import net.minecraftforge.fml.relauncher.SideOnly;
+
+/**
+ * Reports world/terrain progress so the loading screen can say
+ * "Building terrain" / "Joining world" during world load.
+ *
+ * Also catches the ResourcePack reload via GuiScreenEvent when a
+ * GuiScreenResourcePack is about to open.
+ */
+@SideOnly(Side.CLIENT)
+public class TerrainLoadListener {
+
+    @SubscribeEvent
+    public void onWorldLoad(WorldEvent.Load e) {
+        LoadingProgress.setScreenActive(true);
+        LoadingProgress.setPhase(LoadingPhase.TERRAIN, 0.1f);
+        LoadingProgress.setMessage("Downloading terrain");
+    }
+
+    @SubscribeEvent
+    public void onWorldUnload(WorldEvent.Unload e) {
+        // nothing to do yet; kept for symmetry
+    }
+
+    @SubscribeEvent
+    public void onGuiInitPre(GuiScreenEvent.InitGuiEvent.Pre e) {
+        if (e.gui == null) return;
+        String name = e.gui.getClass().getSimpleName();
+        if (name.equals("GuiDownloadTerrain") || name.equals("GuiWorldLoad")) {
+            LoadingProgress.setScreenActive(true);
+            LoadingProgress.setPhase(LoadingPhase.JOINING_WORLD, 0.2f);
+            LoadingProgress.setMessage("Joining world");
+        }
+        if (name.equals("GuiScreenResourcePacks")) {
+            LoadingProgress.setScreenActive(true);
+            LoadingProgress.setPhase(LoadingPhase.RELOADING, 0.1f);
+            LoadingProgress.setMessage("Scanning resource packs");
+        }
     }
 }
 """
 
 ASYNC_MENUS_JAVA = r"""package com.example.asyncmenus;
 
+import com.example.asyncmenus.loading.LoadingProgressHandler;
 import com.example.asyncmenus.loading.LoadingScreenHook;
+import com.example.asyncmenus.loading.TerrainLoadListener;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
@@ -274,7 +532,12 @@ public class AsyncMenus {
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
+        // Install the loading screen before anything else.
         LoadingScreenHook.install();
+
+        // Progress handlers: Forge bus for lifecycle events...
+        MinecraftForge.EVENT_BUS.register(new LoadingProgressHandler());
+        MinecraftForge.EVENT_BUS.register(new TerrainLoadListener());
     }
 
     @Mod.EventHandler
@@ -285,21 +548,89 @@ public class AsyncMenus {
 }
 """
 
+LOADING_SCREEN_TRANSFORMER_JAVA = r"""package com.example.asyncmenus.core;
+
+import net.minecraft.launchwrapper.IClassTransformer;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.*;
+
+/**
+ * Neutralises LoadingScreenRenderer.drawScreen() so vanilla never
+ * paints the Mojang splash. Our own renderer takes over from preInit.
+ *
+ * Forge 1.8.9 ships ASM 5.0.3, so we target ASM5.
+ */
+public class LoadingScreenTransformer implements IClassTransformer {
+
+    private static final String TARGET = "net.minecraft.client.LoadingScreenRenderer";
+
+    @Override
+    public byte[] transform(String name, String transformedName, byte[] basicClass) {
+        if (basicClass == null) return null;
+        if (!TARGET.equals(transformedName) && !TARGET.equals(name)) return basicClass;
+
+        ClassNode cn = new ClassNode();
+        new ClassReader(basicClass).accept(cn, 0);
+
+        for (MethodNode mn : cn.methods) {
+            if ("drawScreen".equals(mn.name) || "func_73719_c".equals(mn.name)) {
+                mn.instructions.clear();
+                mn.tryCatchBlocks.clear();
+                if (mn.localVariables != null) mn.localVariables.clear();
+
+                InsnList ret = new InsnList();
+                ret.add(new InsnNode(Opcodes.RETURN));
+                mn.instructions.add(ret);
+
+                mn.maxStack = 1;
+                mn.maxLocals = 1;
+            }
+        }
+
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+        cn.accept(cw);
+        return cw.toByteArray();
+    }
+}
+"""
+
+LOADING_PLUGIN_JAVA = r"""package com.example.asyncmenus.core;
+
+import net.minecraftforge.fml.relauncher.IFMLLoadingPlugin;
+
+import java.util.Map;
+
+@IFMLLoadingPlugin.MCVersion("1.8.9")
+@IFMLLoadingPlugin.TransformerExclusions({"com.example.asyncmenus.core"})
+public class AsyncMenusLoadingPlugin implements IFMLLoadingPlugin {
+
+    @Override public String[] getASMTransformerClass() {
+        return new String[]{ LoadingScreenTransformer.class.getName() };
+    }
+    @Override public String getModContainerClass()           { return null; }
+    @Override public String getSetupClass()                  { return null; }
+    @Override public void   injectData(Map<String,Object> d) {}
+    @Override public String getAccessTransformerClass()      { return null; }
+}
+"""
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def log(msg: str) -> None:
-    print(f"[fixer] {msg}")
+def log(m: str) -> None:
+    print(f"[fixer] {m}")
 
 
-def warn(msg: str) -> None:
-    print(f"[fixer] WARNING: {msg}", file=sys.stderr)
+def warn(m: str) -> None:
+    print(f"[fixer] WARNING: {m}", file=sys.stderr)
 
 
-def die(msg: str, code: int = 1) -> None:
-    print(f"[fixer] ERROR: {msg}", file=sys.stderr)
+def die(m: str, code: int = 1) -> None:
+    print(f"[fixer] ERROR: {m}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -312,7 +643,7 @@ def find_repo_root(start: Path) -> Path:
     for c in [cur, *cur.parents]:
         if is_repo_root(c):
             return c
-    die(f"could not find a repository (no build.gradle) above {start}")
+    die(f"no build.gradle found above {start}")
     raise SystemExit(1)
 
 
@@ -334,16 +665,14 @@ def backup_repo(repo: Path) -> Path:
 
 
 def write_text(path: Path, content: str, dry_run: bool) -> bool:
-    """Write *content* to *path*. Returns True if anything changed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         try:
-            existing = path.read_text(encoding="utf-8")
+            if path.read_text(encoding="utf-8") == content:
+                log(f"already up-to-date: {path.name}")
+                return False
         except OSError:
-            existing = None
-        if existing == content:
-            log(f"already up-to-date: {path.name}")
-            return False
+            pass
     log(f"writing {path}")
     if not dry_run:
         path.write_text(content, encoding="utf-8")
@@ -363,71 +692,101 @@ def remove_broken_package(repo: Path, dry_run: bool) -> bool:
     try:
         if com_dir.is_dir() and not any(com_dir.iterdir()):
             com_dir.rmdir()
-            log(f"pruned empty directory: {com_dir.relative_to(repo)}")
     except OSError:
         pass
     return True
 
 
 # ---------------------------------------------------------------------------
-# Placeholder logo PNG
+# Placeholder PNG
 # ---------------------------------------------------------------------------
 
 
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
     payload = tag + data
-    return (
-        struct.pack(">I", len(data))
-        + payload
-        + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
-    )
+    return (struct.pack(">I", len(data)) + payload
+            + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF))
 
 
 def make_placeholder_png(w: int = 128, h: int = 128) -> bytes:
-    """Return a small RGBA PNG: a diagonal blue gradient with cut corners."""
     raw = bytearray()
     for y in range(h):
-        raw.append(0)  # filter type 0
+        raw.append(0)
         for x in range(w):
-            t = (x + y) / (w + h)              # 0..1 along the diagonal
+            t = (x + y) / (w + h)
             r = int(20 + 40 * t)
             g = int(80 + 100 * t)
             b = int(160 + 80 * t)
-
-            # cut the four corners by making them transparent
             cx, cy = w / 2.0, h / 2.0
             dx, dy = abs(x - cx) / cx, abs(y - cy) / cy
             a = 0 if (dx > 0.88 and dy > 0.88) else 255
             raw += bytes((r, g, b, a))
-
     sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
     idat = zlib.compress(bytes(raw), 9)
     return sig + _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", idat) + _png_chunk(b"IEND", b"")
 
 
-def install_texture(repo: Path, custom_logo: Path | None, dry_run: bool) -> None:
+def install_texture(repo: Path, custom: Path | None, dry_run: bool) -> None:
     dst = repo / TEXTURE_REL
     dst.parent.mkdir(parents=True, exist_ok=True)
-
-    if custom_logo is not None:
-        if not custom_logo.is_file():
-            die(f"--custom-logo not found: {custom_logo}")
-        if dst.exists() and dst.read_bytes() == custom_logo.read_bytes():
+    if custom is not None:
+        if not custom.is_file():
+            die(f"--custom-logo not found: {custom}")
+        if dst.exists() and dst.read_bytes() == custom.read_bytes():
             log(f"logo already in place: {TEXTURE_REL}")
             return
-        log(f"copying custom logo {custom_logo} -> {TEXTURE_REL}")
+        log(f"copying logo -> {TEXTURE_REL}")
         if not dry_run:
-            shutil.copyfile(custom_logo, dst)
+            shutil.copyfile(custom, dst)
         return
-
     if dst.exists():
-        log(f"logo already present, leaving alone: {TEXTURE_REL}")
+        log(f"logo already present: {TEXTURE_REL}")
         return
-
     log(f"generating placeholder logo: {TEXTURE_REL}")
     if not dry_run:
         dst.write_bytes(make_placeholder_png())
+
+
+# ---------------------------------------------------------------------------
+# build.gradle — add coremod manifest attributes
+# ---------------------------------------------------------------------------
+
+
+def patch_build_gradle(repo: Path, dry_run: bool, enable_coremod: bool) -> bool:
+    """Ensure a `jar { manifest { ... } }` block exists if coremod is on."""
+    if not enable_coremod:
+        log("skipping build.gradle coremod patch (--no-coremod)")
+        return False
+
+    path = repo / BUILD_GRADLE_REL
+    if not path.is_file():
+        warn("build.gradle not found; skipping coremod manifest patch")
+        return False
+
+    text = path.read_text(encoding="utf-8")
+
+    # Already present?
+    if CORE_PLUGIN_CLASS in text:
+        log("build.gradle already declares the coremod")
+        return False
+
+    block = (
+        "\n"
+        "jar {\n"
+        "    manifest {\n"
+        f"        attributes(\n"
+        f"            'FMLCorePlugin': '{CORE_PLUGIN_CLASS}',\n"
+        f"            'FMLCorePluginContainsFMLMod': 'true'\n"
+        "        )\n"
+        "    }\n"
+        "}\n"
+    )
+
+    log("appending coremod manifest block to build.gradle")
+    if not dry_run:
+        path.write_text(text.rstrip() + "\n" + block, encoding="utf-8")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -438,41 +797,37 @@ def install_texture(repo: Path, custom_logo: Path | None, dry_run: bool) -> None
 def rewrite_workflow(repo: Path, dry_run: bool) -> bool:
     wf = repo / WORKFLOW_REL
     if not wf.is_file():
-        warn(f"workflow not found: {WORKFLOW_REL} (skipping)")
+        warn(f"workflow not found: {WORKFLOW_REL}")
         return False
 
     original = wf.read_text(encoding="utf-8")
 
-    # Match the entire "Upload jar" step (name + following indented lines)
-    # and replace it wholesale, fixing both its indent and its contents.
     step_re = re.compile(
         r"(?P<indent>[ \t]*)-[ \t]*name:[ \t]*Upload jar[ \t]*\r?\n"
         r"(?P<body>(?:[ \t]+[^\n]*\r?\n)+)",
         re.MULTILINE,
     )
-
-    desired = (
-        "      - name: Upload jar\n"
-        "        uses: actions/upload-artifact@v4\n"
-        "        with:\n"
-        f"          name: {ARTIFACT_NAME}\n"
-        "          path: |\n"
-        f"            {ARTIFACT_PATH}\n"
-        f"            {ARTIFACT_EXCLUDE}\n"
-        "          if-no-files-found: error\n"
-    )
-
     m = step_re.search(original)
     if not m:
-        warn("could not locate the 'Upload jar' step; workflow left untouched")
+        warn("could not locate 'Upload jar' step; workflow untouched")
         return False
 
-    new = original[: m.start()] + desired + original[m.end():]
+    indent = m.group("indent")
+    desired = (
+        f"{indent}- name: Upload jar\n"
+        f"{indent}  uses: actions/upload-artifact@v4\n"
+        f"{indent}  with:\n"
+        f"{indent}    name: {ARTIFACT_NAME}\n"
+        f"{indent}    path: |\n"
+        f"{indent}      {ARTIFACT_PATH}\n"
+        f"{indent}      {ARTIFACT_EXCLUDE}\n"
+        f"{indent}    if-no-files-found: error\n"
+    )
 
+    new = original[: m.start()] + desired + original[m.end():]
     if new == original:
         log("workflow already correct")
         return False
-
     log(f"rewriting {WORKFLOW_REL}")
     if not dry_run:
         wf.write_text(new, encoding="utf-8")
@@ -482,8 +837,6 @@ def rewrite_workflow(repo: Path, dry_run: bool) -> bool:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
-
-import re  # noqa: E402  (kept near use for clarity)
 
 STALE_REF = re.compile(r"\bcom\.oryvex\b")
 
@@ -497,34 +850,28 @@ def find_stale_refs(repo: Path) -> list[Path]:
         if p.suffix.lower() not in {".java", ".kt", ".groovy", ".scala"}:
             continue
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            if STALE_REF.search(p.read_text(encoding="utf-8", errors="replace")):
+                out.append(p)
         except OSError:
-            continue
-        if STALE_REF.search(text):
-            out.append(p)
+            pass
     return out
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# main
 # ---------------------------------------------------------------------------
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description=(
-            "Fix the GeminiClient/Oryvex repo so `gradle build` succeeds, "
-            "and install a custom Minecraft loading screen."
-        ),
+        description="Fix the repo and install a full-startup loading screen.",
     )
-    p.add_argument("--repo", type=Path, default=None,
-                   help="repository root (default: nearest parent of this script with build.gradle)")
-    p.add_argument("--custom-logo", type=Path, default=None,
-                   help="PNG to install as the loading screen logo (default: generated placeholder)")
-    p.add_argument("--no-backup", action="store_true",
-                   help="skip the .zip backup")
-    p.add_argument("--dry-run", action="store_true",
-                   help="report planned changes, write nothing")
+    p.add_argument("--repo", type=Path, default=None)
+    p.add_argument("--custom-logo", type=Path, default=None)
+    p.add_argument("--no-backup", action="store_true")
+    p.add_argument("--no-coremod", action="store_true",
+                   help="skip the ASM transformer / FMLCorePlugin patch")
+    p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
 
@@ -534,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.repo is not None:
         repo = args.repo.resolve()
         if not is_repo_root(repo):
-            die(f"{repo} does not look like a repository (no build.gradle)")
+            die(f"{repo} has no build.gradle")
     else:
         repo = find_repo_root(Path(__file__).resolve().parent)
 
@@ -547,35 +894,52 @@ def main(argv: list[str] | None = None) -> int:
     elif args.no_backup:
         log("backup disabled")
 
-    removed_pkg = remove_broken_package(repo, args.dry_run)
+    removed = remove_broken_package(repo, args.dry_run)
 
-    changed_custom = write_text(repo / CUSTOM_LOADING_REL, CUSTOM_LOADING_JAVA, args.dry_run)
-    changed_hook   = write_text(repo / LOADING_HOOK_REL,   LOADING_HOOK_JAVA,   args.dry_run)
-    changed_mod    = write_text(repo / ASYNC_MENUS_REL,    ASYNC_MENUS_JAVA,    args.dry_run)
+    # Loading system
+    writes = {
+        "LoadingPhase.java":           (LOADING_PKG / "LoadingPhase.java",            LOADING_PHASE_JAVA),
+        "LoadingProgress.java":        (LOADING_PKG / "LoadingProgress.java",         LOADING_PROGRESS_JAVA),
+        "CustomLoadingScreen.java":    (LOADING_PKG / "CustomLoadingScreen.java",     CUSTOM_LOADING_JAVA),
+        "LoadingScreenHook.java":      (LOADING_PKG / "LoadingScreenHook.java",       LOADING_SCREEN_HOOK_JAVA),
+        "LoadingProgressHandler.java": (LOADING_PKG / "LoadingProgressHandler.java",  LOADING_PROGRESS_HANDLER_JAVA),
+        "TerrainLoadListener.java":    (LOADING_PKG / "TerrainLoadListener.java",     TERRAIN_LOAD_LISTENER_JAVA),
+    }
+
+    # Coremod (optional)
+    if not args.no_coremod:
+        writes["LoadingScreenTransformer.java"] = (
+            CORE_PKG / "LoadingScreenTransformer.java", LOADING_SCREEN_TRANSFORMER_JAVA)
+        writes["AsyncMenusLoadingPlugin.java"] = (
+            CORE_PKG / "AsyncMenusLoadingPlugin.java",  LOADING_PLUGIN_JAVA)
+
+    # Mod entry point (always)
+    writes["AsyncMenus.java"] = (ASYNC_MENUS_REL, ASYNC_MENUS_JAVA)
+
+    changed = 0
+    for _, (path, content) in writes.items():
+        if write_text(repo / path, content, args.dry_run):
+            changed += 1
 
     install_texture(repo, args.custom_logo, args.dry_run)
 
-    changed_wf = rewrite_workflow(repo, args.dry_run)
+    changed_gradle = patch_build_gradle(repo, args.dry_run, not args.no_coremod)
+    changed_wf     = rewrite_workflow(repo, args.dry_run)
 
     offenders = find_stale_refs(repo)
     if offenders:
-        warn("the following files still reference 'com.oryvex':")
+        warn("files still referencing 'com.oryvex':")
         for p in offenders:
             print(f"    {p.relative_to(repo)}", file=sys.stderr)
-    else:
-        log("no stale 'com.oryvex' references remain")
 
     print()
     log("summary")
-    log(f"  broken package removed        : {removed_pkg}")
-    log(f"  CustomLoadingScreen.java      : {'written' if changed_custom else 'unchanged'}")
-    log(f"  LoadingScreenHook.java        : {'written' if changed_hook else 'unchanged'}")
-    log(f"  AsyncMenus.java               : {'written' if changed_mod else 'unchanged'}")
-    log(f"  workflow                      : {'rewritten' if changed_wf else 'unchanged'}")
-    log(f"  stale 'com.oryvex' references : {len(offenders)}")
-
-    if args.dry_run:
-        log("re-run without --dry-run to apply")
+    log(f"  broken package removed : {removed}")
+    log(f"  java files written     : {changed}")
+    log(f"  build.gradle patched   : {changed_gradle}")
+    log(f"  workflow rewritten     : {changed_wf}")
+    log(f"  coremod enabled        : {not args.no_coremod}")
+    log(f"  stale references       : {len(offenders)}")
 
     return 0 if not offenders else 2
 

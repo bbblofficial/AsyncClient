@@ -7,10 +7,15 @@ import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Field;
 
-/** Swaps the vanilla loading screen for CustomLoadingScreen. */
+/**
+ * Installs CustomLoadingScreen into Minecraft.loadingScreen as early
+ * as possible (preInit). Also keeps a static reference so the tick
+ * handler can force redraws while other startup work runs.
+ */
 public final class LoadingScreenHook {
 
     private static final Logger LOG = LogManager.getLogger("asyncmenus");
+    private static CustomLoadingScreen activeScreen;
     private static boolean installed;
 
     private LoadingScreenHook() {}
@@ -28,23 +33,26 @@ public final class LoadingScreenHook {
         try {
             Field f = findField();
             f.setAccessible(true);
-            if (f.get(mc) instanceof CustomLoadingScreen) return;
-
-            f.set(mc, new CustomLoadingScreen(mc));
+            if (f.get(mc) instanceof CustomLoadingScreen) {
+                activeScreen = (CustomLoadingScreen) f.get(mc);
+                return;
+            }
+            activeScreen = new CustomLoadingScreen(mc);
+            f.set(mc, activeScreen);
+            LoadingProgress.setScreenActive(true);
             LOG.info("Custom loading screen installed");
         } catch (Throwable t) {
             LOG.error("Could not install custom loading screen; vanilla will be used", t);
         }
     }
 
+    public static CustomLoadingScreen getActiveScreen() { return activeScreen; }
+
     private static Field findField() throws NoSuchFieldException {
         try { return Minecraft.class.getDeclaredField("loadingScreen"); }  catch (NoSuchFieldException ignored) {}
         try { return Minecraft.class.getDeclaredField("field_71461_s"); } catch (NoSuchFieldException ignored) {}
-
-        // Last resort: first field whose type is LoadingScreenRenderer
         for (Field f : Minecraft.class.getDeclaredFields())
             if (f.getType() == LoadingScreenRenderer.class) return f;
-
         throw new NoSuchFieldException("Minecraft.loadingScreen not found");
     }
 }

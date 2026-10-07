@@ -1,6 +1,8 @@
 package com.example.asyncmenus;
 
+import com.example.asyncmenus.loading.LoadingProgressHandler;
 import com.example.asyncmenus.loading.LoadingScreenHook;
+import com.example.asyncmenus.loading.TerrainLoadListener;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
@@ -15,7 +17,12 @@ public class AsyncMenus {
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
+        // Install the loading screen before anything else.
         LoadingScreenHook.install();
+
+        // Progress handlers: Forge bus for lifecycle events...
+        MinecraftForge.EVENT_BUS.register(new LoadingProgressHandler());
+        MinecraftForge.EVENT_BUS.register(new TerrainLoadListener());
     }
 
     @Mod.EventHandler

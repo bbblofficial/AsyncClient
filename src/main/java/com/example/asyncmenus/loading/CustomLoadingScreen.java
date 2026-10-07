@@ -13,32 +13,52 @@ import org.lwjgl.opengl.Display;
 import org.lwjgl.opengl.GL11;
 
 /**
- * Replaces vanilla's Mojang loading screen.
- * Extends LoadingScreenRenderer so it can be dropped into Minecraft.loadingScreen.
+ * Custom loading screen shown from the earliest possible frame until
+ * the main menu / a world is ready. Draws whatever LoadingProgress
+ * currently holds, so it works for every startup phase.
  */
 public class CustomLoadingScreen extends LoadingScreenRenderer {
 
-    /** Replace this PNG with your own logo. Put it under src/main/resources. */
     private static final ResourceLocation LOGO =
             new ResourceLocation("asyncmenus", "textures/gui/custom_loading.png");
 
     private final Minecraft mc;
-    private String title = "";
-    private String message = "";
-    private int progress;
 
     public CustomLoadingScreen(Minecraft mc) {
         super(mc);
         this.mc = mc;
     }
 
-    @Override public void resetProgressAndMessage(String message) { this.title = message; this.message = ""; render(); }
-    @Override public void displaySavingString(String message)     { this.message = message;                  render(); }
-    @Override public void setLoadingProgress(int progress)        { this.progress = progress;                render(); }
-    @Override public void setDoneWorking()                        { /* stop drawing */ }
+    // --- LoadingScreenRenderer API used by vanilla --------------------
 
-    // -----------------------------------------------------------------
-    // Rendering
+    @Override public void resetProgressAndMessage(String message) {
+        LoadingProgress.setMessage(message);
+        LoadingProgress.setPhase(LoadingPhase.START_GAME);
+        render();
+    }
+
+    @Override public void displaySavingString(String message) {
+        LoadingProgress.setMessage(message);
+        render();
+    }
+
+    @Override public void setLoadingProgress(int progress) {
+        LoadingProgress.setSub(progress / 100f);
+        render();
+    }
+
+    @Override public void setDoneWorking() {
+        LoadingProgress.setScreenActive(false);
+    }
+
+    // --- Called by the progress handler each client tick --------------
+
+    /** Render one frame. Safe to call from the client thread only. */
+    public void tick() {
+        if (!LoadingProgress.isScreenActive()) return;
+        render();
+    }
+
     // -----------------------------------------------------------------
 
     private void render() {
@@ -50,9 +70,9 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
 
         // Background
         GlStateManager.clearColor(0.06F, 0.06F, 0.08F, 1.0F);
-        GlStateManager.clear(16640); // GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
+        GlStateManager.clear(16640);
 
-        // Orthographic 2D projection
+        // 2D projection
         GlStateManager.matrixMode(GL11.GL_PROJECTION);
         GlStateManager.loadIdentity();
         GlStateManager.ortho(0.0D, sw, sh, 0.0D, 1000.0D, 3000.0D);
@@ -71,25 +91,40 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         try {
             mc.getTextureManager().bindTexture(LOGO);
             int lw = 128, lh = 128;
-            drawTexturedQuad((sw - lw) / 2, (sh - lh) / 2 - 40, lw, lh);
-        } catch (Throwable ignored) { /* missing texture - text only */ }
+            drawTexturedQuad((sw - lw) / 2, (sh - lh) / 2 - 50, lw, lh);
+        } catch (Throwable ignored) {}
 
         FontRenderer fr = mc.fontRendererObj;
 
-        if (!title.isEmpty())
-            fr.drawStringWithShadow(title, (sw - fr.getStringWidth(title)) / 2, sh / 2 + 60, 0xFFFFFF);
-        if (!message.isEmpty())
-            fr.drawStringWithShadow(message, (sw - fr.getStringWidth(message)) / 2, sh / 2 + 76, 0xAAAAAA);
+        LoadingPhase phase = LoadingProgress.getPhase();
+        int percent = LoadingProgress.getPercent();
+        String custom = LoadingProgress.getCustomMessage();
+
+        // Title (phase label)
+        String title = phase.label;
+        fr.drawStringWithShadow(title,
+                (sw - fr.getStringWidth(title)) / 2, sh / 2 + 50, 0xFFFFFF);
+
+        // Custom message from vanilla or mods
+        if (!custom.isEmpty()) {
+            fr.drawStringWithShadow(custom,
+                    (sw - fr.getStringWidth(custom)) / 2, sh / 2 + 66, 0xAAAAAA);
+        }
+
+        // Percent
+        String pctStr = percent + "%";
+        fr.drawStringWithShadow(pctStr,
+                (sw - fr.getStringWidth(pctStr)) / 2, sh / 2 + 82, 0xCCCCCC);
 
         // Progress bar
-        int barW = 200, barH = 4;
+        int barW = 240, barH = 5;
         int barX = (sw - barW) / 2;
         int barY = sh / 2 + 100;
 
         drawRect(barX - 1, barY - 1, barX + barW + 1, barY + barH + 1, 0xFF333333);
         drawRect(barX, barY, barX + barW, barY + barH, 0xFF555555);
-        if (progress > 0) {
-            int fw = barW * Math.min(progress, 100) / 100;
+        if (percent > 0) {
+            int fw = barW * percent / 100;
             drawRect(barX, barY, barX + fw, barY + barH, 0xFF4FC3F7);
         }
 
