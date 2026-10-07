@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download Minecraft 1.8.8 + Forge + libraries + assets into a target directory."""
+"""Download Minecraft 1.8.8 + Forge + libraries (NO assets)."""
 import hashlib
 import json
 import os
@@ -8,35 +8,27 @@ import urllib.request
 
 VERSION = "1.8.8"
 FORGE_VERSION = "1.8.8-11.15.0.1655"
-FORGE_UNIVERSAL_URL = (
-    f"https://maven.minecraftforge.net/net/minecraftforge/forge/"
-    f"{FORGE_VERSION}/forge-{FORGE_VERSION}-universal.jar"
-)
+FORGE_URL = (f"https://maven.minecraftforge.net/net/minecraftforge/forge/"
+             f"{FORGE_VERSION}/forge-{FORGE_VERSION}-universal.jar")
 MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
-RESOURCES_URL = "https://resources.download.minecraft.net"
-
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-      "AppleWebKit/537.36 (KHTML, like Gecko) "
-      "Chrome/120.0 Safari/537.36")
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
 
-def log(msg):
-    print(f"[dl] {msg}", flush=True)
+def log(m):
+    print(f"[dl] {m}", flush=True)
 
 
-def sha1_file(path):
+def sha1_file(p):
     h = hashlib.sha1()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
+    with open(p, "rb") as f:
+        for c in iter(lambda: f.read(65536), b""):
+            h.update(c)
     return h.hexdigest()
 
 
-def _request(url):
-    return urllib.request.Request(url, headers={
-        "User-Agent": UA,
-        "Accept": "*/*",
-    })
+def _req(u):
+    return urllib.request.Request(u, headers={"User-Agent": UA})
 
 
 def download(url, dest, sha1=None):
@@ -44,18 +36,12 @@ def download(url, dest, sha1=None):
         return
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
-    try:
-        with urllib.request.urlopen(_request(url), timeout=60) as resp, \
-                open(tmp, "wb") as f:
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                f.write(chunk)
-    except Exception:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+    with urllib.request.urlopen(_req(url), timeout=120) as r, open(tmp, "wb") as f:
+        while True:
+            c = r.read(65536)
+            if not c:
+                break
+            f.write(c)
     if sha1 and sha1_file(tmp) != sha1:
         os.remove(tmp)
         raise RuntimeError(f"SHA1 mismatch: {url}")
@@ -64,86 +50,53 @@ def download(url, dest, sha1=None):
     os.rename(tmp, dest)
 
 
-def http_json(url):
-    with urllib.request.urlopen(_request(url), timeout=60) as r:
-        return json.loads(r.read().decode("utf-8"))
+def http_json(u):
+    with urllib.request.urlopen(_req(u), timeout=60) as r:
+        return json.loads(r.read().decode())
 
 
-def maven_to_path(name):
-    parts = name.split(":")
-    group, artifact, version = parts[0], parts[1], parts[2]
-    classifier = parts[3] if len(parts) > 3 else None
-    ext = parts[4] if len(parts) > 4 else "jar"
-    filename = f"{artifact}-{version}"
-    if classifier:
-        filename += f"-{classifier}"
-    filename += f".{ext}"
-    return "/".join(group.split(".")) + f"/{artifact}/{version}/{filename}"
+def maven_path(n):
+    p = n.split(":")
+    g, a, v = p[0], p[1], p[2]
+    cls = p[3] if len(p) > 3 else None
+    ext = p[4] if len(p) > 4 else "jar"
+    fn = f"{a}-{v}" + (f"-{cls}" if cls else "") + f".{ext}"
+    return "/".join(g.split(".")) + f"/{a}/{v}/{fn}"
 
 
 def main(target):
     libs = os.path.join(target, "libraries")
-    assets = os.path.join(target, "assets")
     versions = os.path.join(target, "versions")
 
-    log("Fetching version manifest ...")
-    manifest = http_json(MANIFEST_URL)
-    version_url = next(v["url"] for v in manifest["versions"] if v["id"] == VERSION)
-    vjson = http_json(version_url)
+    log("Fetching manifest ...")
+    m = http_json(MANIFEST_URL)
+    vurl = next(v["url"] for v in m["versions"] if v["id"] == VERSION)
+    vj = http_json(vurl)
 
-    client = vjson["downloads"]["client"]
-    client_dest = os.path.join(versions, VERSION, f"{VERSION}.jar")
+    c = vj["downloads"]["client"]
     log("Downloading client.jar ...")
-    download(client["url"], client_dest, client.get("sha1"))
+    download(c["url"], os.path.join(versions, VERSION, f"{VERSION}.jar"), c.get("sha1"))
 
     log("Downloading libraries ...")
-    for lib in vjson["libraries"]:
-        downloads = lib.get("downloads", {})
-        artifact = downloads.get("artifact")
-        if artifact:
-            rel = maven_to_path(lib["name"])
-            download(artifact["url"], os.path.join(libs, rel), artifact.get("sha1"))
-        classifiers = downloads.get("classifiers", {})
-        natives = lib.get("natives", {})
-        for os_key in set(natives.values()):
-            if os_key in classifiers:
-                cls = classifiers[os_key]
-                rel = maven_to_path(lib["name"] + ":" + os_key)
-                download(cls["url"], os.path.join(libs, rel), cls.get("sha1"))
+    for lib in vj["libraries"]:
+        dl = lib.get("downloads", {})
+        if dl.get("artifact"):
+            download(dl["artifact"]["url"],
+                     os.path.join(libs, maven_path(lib["name"])),
+                     dl["artifact"].get("sha1"))
+        for k in set(lib.get("natives", {}).values()):
+            if k in dl.get("classifiers", {}):
+                cl = dl["classifiers"][k]
+                download(cl["url"],
+                         os.path.join(libs, maven_path(lib["name"] + ":" + k)),
+                         cl.get("sha1"))
 
     log("Downloading Forge universal ...")
-    forge_dest = os.path.join(libs, "net", "minecraftforge", "forge",
-                              FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar")
-    download(FORGE_UNIVERSAL_URL, forge_dest)
+    download(FORGE_URL,
+             os.path.join(libs, "net/minecraftforge/forge",
+                          FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar"))
 
-    asset_index = vjson.get("assetIndex")
-    if asset_index:
-        index_path = os.path.join(assets, "indexes", asset_index["id"] + ".json")
-        log(f"Downloading asset index {asset_index['id']} ...")
-        download(asset_index["url"], index_path, asset_index.get("sha1"))
-        with open(index_path, encoding="utf-8") as f:
-            index = json.load(f)
-        total = len(index["objects"])
-        log(f"Downloading {total} assets ...")
-        done = skipped = 0
-        for name, obj in index["objects"].items():
-            h = obj["hash"]
-            prefix = h[:2]
-            dest = os.path.join(assets, "objects", prefix, h)
-            if os.path.exists(dest):
-                skipped += 1
-                continue
-            url = f"{RESOURCES_URL}/{prefix}/{h}"
-            try:
-                download(url, dest, h)
-                done += 1
-            except Exception as e:
-                log(f"  ! {name}: {e}")
-            if (done + skipped) % 200 == 0:
-                log(f"  ... {done + skipped}/{total}")
-        log(f"Assets: {done} new, {skipped} cached.")
-
-    log("Done.")
+    log("Done (assets NOT downloaded — will be reused from user's .minecraft).")
 
 
 if __name__ == "__main__":

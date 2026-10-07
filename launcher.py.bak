@@ -82,17 +82,13 @@ def launch():
     client_jar = os.path.join(VERSIONS, VERSION, f"{VERSION}.jar")
     forge_jar = os.path.join(LIBS, "net", "minecraftforge", "forge",
                              FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar")
-
     if not os.path.exists(client_jar):
         raise RuntimeError(f"Missing {client_jar}. Re-extract the ZIP.")
     if not os.path.exists(forge_jar):
         raise RuntimeError(f"Missing {forge_jar}. Re-extract the ZIP.")
-
     extract_natives()
-
     java = find_java()
     cp = build_classpath(client_jar, forge_jar)
-
     jvm_args = [
         java, "-Xmx2G", "-Xms512M",
         f"-Djava.library.path={NATIVES}",
@@ -114,7 +110,6 @@ def launch():
         "--userType", "legacy",
         "--tweakClass", "net.minecraftforge.fml.common.launcher.FMLTweaker",
     ]
-
     log("Launching Minecraft ...")
     try:
         subprocess.run(jvm_args + game_args, cwd=ROOT)
