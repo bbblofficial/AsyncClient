@@ -1,0 +1,3376 @@
+C:\Users\nasle javan\Downloads\OryvexClient-source/
+
+├── .git
+│   ├── COMMIT_EDITMSG
+  first commit
+│   ├── HEAD
+  ref: refs/heads/main
+│   ├── config
+  [core]
+  	repositoryformatversion = 0
+  	filemode = false
+  	bare = false
+  	logallrefupdates = true
+  	symlinks = false
+  	ignorecase = true
+  [remote "origin"]
+  	url = https://github.com/bbblofficial/GeminiClient.git
+  	fetch = +refs/heads/*:refs/remotes/origin/*
+  [branch "main"]
+  	remote = origin
+  	merge = refs/heads/main
+│   ├── description
+  Unnamed repository; edit this file 'description' to name the repository.
+│   ├── hooks
+│   │   ├── applypatch-msg.sample
+  #!/bin/sh
+  #
+  # An example hook script to check the commit log message taken by
+  # applypatch from an e-mail message.
+  #
+  # The hook should exit with non-zero status after issuing an
+  # appropriate message if it wants to stop the commit.  The hook is
+  # allowed to edit the commit message file.
+  #
+  # To enable this hook, rename this file to "applypatch-msg".
+  
+  . git-sh-setup
+  commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
+  test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
+  :
+│   │   ├── commit-msg.sample
+  #!/bin/sh
+  #
+  # An example hook script to check the commit log message.
+  # Called by "git commit" with one argument, the name of the file
+  # that has the commit message.  The hook should exit with non-zero
+  # status after issuing an appropriate message if it wants to stop the
+  # commit.  The hook is allowed to edit the commit message file.
+  #
+  # To enable this hook, rename this file to "commit-msg".
+  
+  # Uncomment the below to add a Signed-off-by line to the message.
+  # Doing this in a hook is a bad idea in general, but the prepare-commit-msg
+  # hook is more suited to it.
+  #
+  # SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+  # grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
+  
+  # This example catches duplicate Signed-off-by lines.
+  
+  test "" = "$(grep '^Signed-off-by: ' "$1" |
+  	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
+  	echo >&2 Duplicate Signed-off-by lines.
+  	exit 1
+  }
+│   │   ├── fsmonitor-watchman.sample
+  #!/usr/bin/perl
+  
+  use strict;
+  use warnings;
+  use IPC::Open2;
+  
+  # An example hook script to integrate Watchman
+  # (https://facebook.github.io/watchman/) with git to speed up detecting
+  # new and modified files.
+  #
+  # The hook is passed a version (currently 2) and last update token
+  # formatted as a string and outputs to stdout a new update token and
+  # all files that have been modified since the update token. Paths must
+  # be relative to the root of the working tree and separated by a single NUL.
+  #
+  # To enable this hook, rename this file to "query-watchman" and set
+  # 'git config core.fsmonitor .git/hooks/query-watchman'
+  #
+  my ($version, $last_update_token) = @ARGV;
+  
+  # Uncomment for debugging
+  # print STDERR "$0 $version $last_update_token\n";
+  
+  # Check the hook interface version
+  if ($version ne 2) {
+  	die "Unsupported query-fsmonitor hook version '$version'.\n" .
+  	    "Falling back to scanning...\n";
+  }
+  
+  my $git_work_tree = get_working_dir();
+  
+  my $retry = 1;
+  
+  my $json_pkg;
+  eval {
+  	require JSON::XS;
+  	$json_pkg = "JSON::XS";
+  	1;
+  } or do {
+  	require JSON::PP;
+  	$json_pkg = "JSON::PP";
+  };
+  
+  launch_watchman();
+  
+  sub launch_watchman {
+  	my $o = watchman_query();
+  	if (is_work_tree_watched($o)) {
+  		output_result($o->{clock}, @{$o->{files}});
+  	}
+  }
+  
+  sub output_result {
+  	my ($clockid, @files) = @_;
+  
+  	# Uncomment for debugging watchman output
+  	# open (my $fh, ">", ".git/watchman-output.out");
+  	# binmode $fh, ":utf8";
+  	# print $fh "$clockid\n@files\n";
+  	# close $fh;
+  
+  	binmode STDOUT, ":utf8";
+  	print $clockid;
+  	print "\0";
+  	local $, = "\0";
+  	print @files;
+  }
+  
+  sub watchman_clock {
+  	my $response = qx/watchman clock "$git_work_tree"/;
+  	die "Failed to get clock id on '$git_work_tree'.\n" .
+  		"Falling back to scanning...\n" if $? != 0;
+  
+  	return $json_pkg->new->utf8->decode($response);
+  }
+  
+  sub watchman_query {
+  	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
+  	or die "open2() failed: $!\n" .
+  	"Falling back to scanning...\n";
+  
+  	# In the query expression below we're asking for names of files that
+  	# changed since $last_update_token but not from the .git folder.
+  	#
+  	# To accomplish this, we're using the "since" generator to use the
+  	# recency index to select candidate nodes and "fields" to limit the
+  	# output to file names only. Then we're using the "expression" term to
+  	# further constrain the results.
+  	my $last_update_line = "";
+  	if (substr($last_update_token, 0, 1) eq "c") {
+  		$last_update_token = "\"$last_update_token\"";
+  		$last_update_line = qq[\n"since": $last_update_token,];
+  	}
+  	my $query = <<"	END";
+  		["query", "$git_work_tree", {$last_update_line
+  			"fields": ["name"],
+  			"expression": ["not", ["dirname", ".git"]]
+  		}]
+  	END
+  
+  	# Uncomment for debugging the watchman query
+  	# open (my $fh, ">", ".git/watchman-query.json");
+  	# print $fh $query;
+  	# close $fh;
+  
+  	print CHLD_IN $query;
+  	close CHLD_IN;
+  	my $response = do {local $/; <CHLD_OUT>};
+  
+  	# Uncomment for debugging the watch response
+  	# open ($fh, ">", ".git/watchman-response.json");
+  	# print $fh $response;
+  	# close $fh;
+  
+  	die "Watchman: command returned no output.\n" .
+  	"Falling back to scanning...\n" if $response eq "";
+  	die "Watchman: command returned invalid output: $response\n" .
+  	"Falling back to scanning...\n" unless $response =~ /^\{/;
+  
+  	return $json_pkg->new->utf8->decode($response);
+  }
+  
+  sub is_work_tree_watched {
+  	my ($output) = @_;
+  	my $error = $output->{error};
+  	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
+  		$retry--;
+  		my $response = qx/watchman watch "$git_work_tree"/;
+  		die "Failed to make watchman watch '$git_work_tree'.\n" .
+  		    "Falling back to scanning...\n" if $? != 0;
+  		$output = $json_pkg->new->utf8->decode($response);
+  		$error = $output->{error};
+  		die "Watchman: $error.\n" .
+  		"Falling back to scanning...\n" if $error;
+  
+  		# Uncomment for debugging watchman output
+  		# open (my $fh, ">", ".git/watchman-output.out");
+  		# close $fh;
+  
+  		# Watchman will always return all files on the first query so
+  		# return the fast "everything is dirty" flag to git and do the
+  		# Watchman query just to get it over with now so we won't pay
+  		# the cost in git to look up each individual file.
+  		my $o = watchman_clock();
+  		$error = $output->{error};
+  
+  		die "Watchman: $error.\n" .
+  		"Falling back to scanning...\n" if $error;
+  
+  		output_result($o->{clock}, ("/"));
+  		$last_update_token = $o->{clock};
+  
+  		eval { launch_watchman() };
+  		return 0;
+  	}
+  
+  	die "Watchman: $error.\n" .
+  	"Falling back to scanning...\n" if $error;
+  
+  	return 1;
+  }
+  
+  sub get_working_dir {
+  	my $working_dir;
+  	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
+  		$working_dir = Win32::GetCwd();
+  		$working_dir =~ tr/\\/\//;
+  	} else {
+  		require Cwd;
+  		$working_dir = Cwd::cwd();
+  	}
+  
+  	return $working_dir;
+  }
+│   │   ├── post-update.sample
+  #!/bin/sh
+  #
+  # An example hook script to prepare a packed repository for use over
+  # dumb transports.
+  #
+  # To enable this hook, rename this file to "post-update".
+  
+  exec git update-server-info
+│   │   ├── pre-applypatch.sample
+  #!/bin/sh
+  #
+  # An example hook script to verify what is about to be committed
+  # by applypatch from an e-mail message.
+  #
+  # The hook should exit with non-zero status after issuing an
+  # appropriate message if it wants to stop the commit.
+  #
+  # To enable this hook, rename this file to "pre-applypatch".
+  
+  . git-sh-setup
+  precommit="$(git rev-parse --git-path hooks/pre-commit)"
+  test -x "$precommit" && exec "$precommit" ${1+"$@"}
+  :
+│   │   ├── pre-commit.sample
+  #!/bin/sh
+  #
+  # An example hook script to verify what is about to be committed.
+  # Called by "git commit" with no arguments.  The hook should
+  # exit with non-zero status after issuing an appropriate message if
+  # it wants to stop the commit.
+  #
+  # To enable this hook, rename this file to "pre-commit".
+  
+  if git rev-parse --verify HEAD >/dev/null 2>&1
+  then
+  	against=HEAD
+  else
+  	# Initial commit: diff against an empty tree object
+  	against=$(git hash-object -t tree /dev/null)
+  fi
+  
+  # If you want to allow non-ASCII filenames set this variable to true.
+  allownonascii=$(git config --type=bool hooks.allownonascii)
+  
+  # Redirect output to stderr.
+  exec 1>&2
+  
+  # Cross platform projects tend to avoid non-ASCII filenames; prevent
+  # them from being added to the repository. We exploit the fact that the
+  # printable range starts at the space character and ends with tilde.
+  if [ "$allownonascii" != "true" ] &&
+  	# Note that the use of brackets around a tr range is ok here, (it's
+  	# even required, for portability to Solaris 10's /usr/bin/tr), since
+  	# the square bracket bytes happen to fall in the designated range.
+  	test $(git diff-index --cached --name-only --diff-filter=A -z $against |
+  	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+  then
+  	cat <<\EOF
+  Error: Attempt to add a non-ASCII file name.
+  
+  This can cause problems if you want to work with people on other platforms.
+  
+  To be portable it is advisable to rename the file.
+  
+  If you know what you are doing you can disable this check using:
+  
+    git config hooks.allownonascii true
+  EOF
+  	exit 1
+  fi
+  
+  # If there are whitespace errors, print the offending file names and fail.
+  exec git diff-index --check --cached $against --
+│   │   ├── pre-merge-commit.sample
+  #!/bin/sh
+  #
+  # An example hook script to verify what is about to be committed.
+  # Called by "git merge" with no arguments.  The hook should
+  # exit with non-zero status after issuing an appropriate message to
+  # stderr if it wants to stop the merge commit.
+  #
+  # To enable this hook, rename this file to "pre-merge-commit".
+  
+  . git-sh-setup
+  test -x "$GIT_DIR/hooks/pre-commit" &&
+          exec "$GIT_DIR/hooks/pre-commit"
+  :
+│   │   ├── pre-push.sample
+  #!/bin/sh
+  
+  # An example hook script to verify what is about to be pushed.  Called by "git
+  # push" after it has checked the remote status, but before anything has been
+  # pushed.  If this script exits with a non-zero status nothing will be pushed.
+  #
+  # This hook is called with the following parameters:
+  #
+  # $1 -- Name of the remote to which the push is being done
+  # $2 -- URL to which the push is being done
+  #
+  # If pushing without using a named remote those arguments will be equal.
+  #
+  # Information about the commits which are being pushed is supplied as lines to
+  # the standard input in the form:
+  #
+  #   <local ref> <local oid> <remote ref> <remote oid>
+  #
+  # This sample shows how to prevent push of commits where the log message starts
+  # with "WIP" (work in progress).
+  
+  remote="$1"
+  url="$2"
+  
+  zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+  
+  while read local_ref local_oid remote_ref remote_oid
+  do
+  	if test "$local_oid" = "$zero"
+  	then
+  		# Handle delete
+  		:
+  	else
+  		if test "$remote_oid" = "$zero"
+  		then
+  			# New branch, examine all commits
+  			range="$local_oid"
+  		else
+  			# Update to existing branch, examine new commits
+  			range="$remote_oid..$local_oid"
+  		fi
+  
+  		# Check for WIP commit
+  		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
+  		if test -n "$commit"
+  		then
+  			echo >&2 "Found WIP commit in $local_ref, not pushing"
+  			exit 1
+  		fi
+  	fi
+  done
+  
+  exit 0
+│   │   ├── pre-rebase.sample
+  #!/bin/sh
+  #
+  # Copyright (c) 2006, 2008 Junio C Hamano
+  #
+  # The "pre-rebase" hook is run just before "git rebase" starts doing
+  # its job, and can prevent the command from running by exiting with
+  # non-zero status.
+  #
+  # The hook is called with the following parameters:
+  #
+  # $1 -- the upstream the series was forked from.
+  # $2 -- the branch being rebased (or empty when rebasing the current branch).
+  #
+  # This sample shows how to prevent topic branches that are already
+  # merged to 'next' branch from getting rebased, because allowing it
+  # would result in rebasing already published history.
+  
+  publish=next
+  basebranch="$1"
+  if test "$#" = 2
+  then
+  	topic="refs/heads/$2"
+  else
+  	topic=`git symbolic-ref HEAD` ||
+  	exit 0 ;# we do not interrupt rebasing detached HEAD
+  fi
+  
+  case "$topic" in
+  refs/heads/??/*)
+  	;;
+  *)
+  	exit 0 ;# we do not interrupt others.
+  	;;
+  esac
+  
+  # Now we are dealing with a topic branch being rebased
+  # on top of master.  Is it OK to rebase it?
+  
+  # Does the topic really exist?
+  git show-ref -q "$topic" || {
+  	echo >&2 "No such branch $topic"
+  	exit 1
+  }
+  
+  # Is topic fully merged to master?
+  not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
+  if test -z "$not_in_master"
+  then
+  	echo >&2 "$topic is fully merged to master; better remove it."
+  	exit 1 ;# we could allow it, but there is no point.
+  fi
+  
+  # Is topic ever merged to next?  If so you should not be rebasing it.
+  only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
+  only_next_2=`git rev-list ^master           ${publish} | sort`
+  if test "$only_next_1" = "$only_next_2"
+  then
+  	not_in_topic=`git rev-list "^$topic" master`
+  	if test -z "$not_in_topic"
+  	then
+  		echo >&2 "$topic is already up to date with master"
+  		exit 1 ;# we could allow it, but there is no point.
+  	else
+  		exit 0
+  	fi
+  else
+  	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
+  	/usr/bin/perl -e '
+  		my $topic = $ARGV[0];
+  		my $msg = "* $topic has commits already merged to public branch:\n";
+  		my (%not_in_next) = map {
+  			/^([0-9a-f]+) /;
+  			($1 => 1);
+  		} split(/\n/, $ARGV[1]);
+  		for my $elem (map {
+  				/^([0-9a-f]+) (.*)$/;
+  				[$1 => $2];
+  			} split(/\n/, $ARGV[2])) {
+  			if (!exists $not_in_next{$elem->[0]}) {
+  				if ($msg) {
+  					print STDERR $msg;
+  					undef $msg;
+  				}
+  				print STDERR " $elem->[1]\n";
+  			}
+  		}
+  	' "$topic" "$not_in_next" "$not_in_master"
+  	exit 1
+  fi
+  
+  <<\DOC_END
+  
+  This sample hook safeguards topic branches that have been
+  published from being rewound.
+  
+  The workflow assumed here is:
+  
+   * Once a topic branch forks from "master", "master" is never
+     merged into it again (either directly or indirectly).
+  
+   * Once a topic branch is fully cooked and merged into "master",
+     it is deleted.  If you need to build on top of it to correct
+     earlier mistakes, a new topic branch is created by forking at
+     the tip of the "master".  This is not strictly necessary, but
+     it makes it easier to keep your history simple.
+  
+   * Whenever you need to test or publish your changes to topic
+     branches, merge them into "next" branch.
+  
+  The script, being an example, hardcodes the publish branch name
+  to be "next", but it is trivial to make it configurable via
+  $GIT_DIR/config mechanism.
+  
+  With this workflow, you would want to know:
+  
+  (1) ... if a topic branch has ever been merged to "next".  Young
+      topic branches can have stupid mistakes you would rather
+      clean up before publishing, and things that have not been
+      merged into other branches can be easily rebased without
+      affecting other people.  But once it is published, you would
+      not want to rewind it.
+  
+  (2) ... if a topic branch has been fully merged to "master".
+      Then you can delete it.  More importantly, you should not
+      build on top of it -- other people may already want to
+      change things related to the topic as patches against your
+      "master", so if you need further changes, it is better to
+      fork the topic (perhaps with the same name) afresh from the
+      tip of "master".
+  
+  Let's look at this example:
+  
+  		   o---o---o---o---o---o---o---o---o---o "next"
+  		  /       /           /           /
+  		 /   a---a---b A     /           /
+  		/   /               /           /
+  	       /   /   c---c---c---c B         /
+  	      /   /   /             \         /
+  	     /   /   /   b---b C     \       /
+  	    /   /   /   /             \     /
+      ---o---o---o---o---o---o---o---o---o---o---o "master"
+  
+  
+  A, B and C are topic branches.
+  
+   * A has one fix since it was merged up to "next".
+  
+   * B has finished.  It has been fully merged up to "master" and "next",
+     and is ready to be deleted.
+  
+   * C has not merged to "next" at all.
+  
+  We would want to allow C to be rebased, refuse A, and encourage
+  B to be deleted.
+  
+  To compute (1):
+  
+  	git rev-list ^master ^topic next
+  	git rev-list ^master        next
+  
+  	if these match, topic has not merged in next at all.
+  
+  To compute (2):
+  
+  	git rev-list master..topic
+  
+  	if this is empty, it is fully merged to "master".
+  
+  DOC_END
+│   │   ├── pre-receive.sample
+  #!/bin/sh
+  #
+  # An example hook script to make use of push options.
+  # The example simply echoes all push options that start with 'echoback='
+  # and rejects all pushes when the "reject" push option is used.
+  #
+  # To enable this hook, rename this file to "pre-receive".
+  
+  if test -n "$GIT_PUSH_OPTION_COUNT"
+  then
+  	i=0
+  	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
+  	do
+  		eval "value=\$GIT_PUSH_OPTION_$i"
+  		case "$value" in
+  		echoback=*)
+  			echo "echo from the pre-receive-hook: ${value#*=}" >&2
+  			;;
+  		reject)
+  			exit 1
+  		esac
+  		i=$((i + 1))
+  	done
+  fi
+│   │   ├── prepare-commit-msg.sample
+  #!/bin/sh
+  #
+  # An example hook script to prepare the commit log message.
+  # Called by "git commit" with the name of the file that has the
+  # commit message, followed by the description of the commit
+  # message's source.  The hook's purpose is to edit the commit
+  # message file.  If the hook fails with a non-zero status,
+  # the commit is aborted.
+  #
+  # To enable this hook, rename this file to "prepare-commit-msg".
+  
+  # This hook includes three examples. The first one removes the
+  # "# Please enter the commit message..." help message.
+  #
+  # The second includes the output of "git diff --name-status -r"
+  # into the message, just before the "git status" output.  It is
+  # commented because it doesn't cope with --amend or with squashed
+  # commits.
+  #
+  # The third example adds a Signed-off-by line to the message, that can
+  # still be edited.  This is rarely a good idea.
+  
+  COMMIT_MSG_FILE=$1
+  COMMIT_SOURCE=$2
+  SHA1=$3
+  
+  /usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
+  
+  # case "$COMMIT_SOURCE,$SHA1" in
+  #  ,|template,)
+  #    /usr/bin/perl -i.bak -pe '
+  #       print "\n" . `git diff --cached --name-status -r`
+  # 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
+  #  *) ;;
+  # esac
+  
+  # SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+  # git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
+  # if test -z "$COMMIT_SOURCE"
+  # then
+  #   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
+  # fi
+│   │   ├── push-to-checkout.sample
+  #!/bin/sh
+  
+  # An example hook script to update a checked-out tree on a git push.
+  #
+  # This hook is invoked by git-receive-pack(1) when it reacts to git
+  # push and updates reference(s) in its repository, and when the push
+  # tries to update the branch that is currently checked out and the
+  # receive.denyCurrentBranch configuration variable is set to
+  # updateInstead.
+  #
+  # By default, such a push is refused if the working tree and the index
+  # of the remote repository has any difference from the currently
+  # checked out commit; when both the working tree and the index match
+  # the current commit, they are updated to match the newly pushed tip
+  # of the branch. This hook is to be used to override the default
+  # behaviour; however the code below reimplements the default behaviour
+  # as a starting point for convenient modification.
+  #
+  # The hook receives the commit with which the tip of the current
+  # branch is going to be updated:
+  commit=$1
+  
+  # It can exit with a non-zero status to refuse the push (when it does
+  # so, it must not modify the index or the working tree).
+  die () {
+  	echo >&2 "$*"
+  	exit 1
+  }
+  
+  # Or it can make any necessary changes to the working tree and to the
+  # index to bring them to the desired state when the tip of the current
+  # branch is updated to the new commit, and exit with a zero status.
+  #
+  # For example, the hook can simply run git read-tree -u -m HEAD "$1"
+  # in order to emulate git fetch that is run in the reverse direction
+  # with git push, as the two-tree form of git read-tree -u -m is
+  # essentially the same as git switch or git checkout that switches
+  # branches while keeping the local changes in the working tree that do
+  # not interfere with the difference between the branches.
+  
+  # The below is a more-or-less exact translation to shell of the C code
+  # for the default behaviour for git's push-to-checkout hook defined in
+  # the push_to_deploy() function in builtin/receive-pack.c.
+  #
+  # Note that the hook will be executed from the repository directory,
+  # not from the working tree, so if you want to perform operations on
+  # the working tree, you will have to adapt your code accordingly, e.g.
+  # by adding "cd .." or using relative paths.
+  
+  if ! git update-index -q --ignore-submodules --refresh
+  then
+  	die "Up-to-date check failed"
+  fi
+  
+  if ! git diff-files --quiet --ignore-submodules --
+  then
+  	die "Working directory has unstaged changes"
+  fi
+  
+  # This is a rough translation of:
+  #
+  #   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
+  if git cat-file -e HEAD 2>/dev/null
+  then
+  	head=HEAD
+  else
+  	head=$(git hash-object -t tree --stdin </dev/null)
+  fi
+  
+  if ! git diff-index --quiet --cached --ignore-submodules $head --
+  then
+  	die "Working directory has staged changes"
+  fi
+  
+  if ! git read-tree -u -m "$commit"
+  then
+  	die "Could not update working tree to new HEAD"
+  fi
+│   │   ├── sendemail-validate.sample
+  #!/bin/sh
+  
+  # An example hook script to validate a patch (and/or patch series) before
+  # sending it via email.
+  #
+  # The hook should exit with non-zero status after issuing an appropriate
+  # message if it wants to prevent the email(s) from being sent.
+  #
+  # To enable this hook, rename this file to "sendemail-validate".
+  #
+  # By default, it will only check that the patch(es) can be applied on top of
+  # the default upstream branch without conflicts in a secondary worktree. After
+  # validation (successful or not) of the last patch of a series, the worktree
+  # will be deleted.
+  #
+  # The following config variables can be set to change the default remote and
+  # remote ref that are used to apply the patches against:
+  #
+  #   sendemail.validateRemote (default: origin)
+  #   sendemail.validateRemoteRef (default: HEAD)
+  #
+  # Replace the TODO placeholders with appropriate checks according to your
+  # needs.
+  
+  validate_cover_letter () {
+  	file="$1"
+  	# TODO: Replace with appropriate checks (e.g. spell checking).
+  	true
+  }
+  
+  validate_patch () {
+  	file="$1"
+  	# Ensure that the patch applies without conflicts.
+  	git am -3 "$file" || return
+  	# TODO: Replace with appropriate checks for this patch
+  	# (e.g. checkpatch.pl).
+  	true
+  }
+  
+  validate_series () {
+  	# TODO: Replace with appropriate checks for the whole series
+  	# (e.g. quick build, coding style checks, etc.).
+  	true
+  }
+  
+  # main -------------------------------------------------------------------------
+  
+  if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
+  then
+  	remote=$(git config --default origin --get sendemail.validateRemote) &&
+  	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
+  	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
+  	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
+  	git config --replace-all sendemail.validateWorktree "$worktree"
+  else
+  	worktree=$(git config --get sendemail.validateWorktree)
+  fi || {
+  	echo "sendemail-validate: error: failed to prepare worktree" >&2
+  	exit 1
+  }
+  
+  unset GIT_DIR GIT_WORK_TREE
+  cd "$worktree" &&
+  
+  if grep -q "^diff --git " "$1"
+  then
+  	validate_patch "$1"
+  else
+  	validate_cover_letter "$1"
+  fi &&
+  
+  if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
+  then
+  	git config --unset-all sendemail.validateWorktree &&
+  	trap 'git worktree remove -ff "$worktree"' EXIT &&
+  	validate_series
+  fi
+│   │   └── update.sample
+  #!/bin/sh
+  #
+  # An example hook script to block unannotated tags from entering.
+  # Called by "git receive-pack" with arguments: refname sha1-old sha1-new
+  #
+  # To enable this hook, rename this file to "update".
+  #
+  # Config
+  # ------
+  # hooks.allowunannotated
+  #   This boolean sets whether unannotated tags will be allowed into the
+  #   repository.  By default they won't be.
+  # hooks.allowdeletetag
+  #   This boolean sets whether deleting tags will be allowed in the
+  #   repository.  By default they won't be.
+  # hooks.allowmodifytag
+  #   This boolean sets whether a tag may be modified after creation. By default
+  #   it won't be.
+  # hooks.allowdeletebranch
+  #   This boolean sets whether deleting branches will be allowed in the
+  #   repository.  By default they won't be.
+  # hooks.denycreatebranch
+  #   This boolean sets whether remotely creating branches will be denied
+  #   in the repository.  By default this is allowed.
+  #
+  
+  # --- Command line
+  refname="$1"
+  oldrev="$2"
+  newrev="$3"
+  
+  # --- Safety check
+  if [ -z "$GIT_DIR" ]; then
+  	echo "Don't run this script from the command line." >&2
+  	echo " (if you want, you could supply GIT_DIR then run" >&2
+  	echo "  $0 <ref> <oldrev> <newrev>)" >&2
+  	exit 1
+  fi
+  
+  if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
+  	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
+  	exit 1
+  fi
+  
+  # --- Config
+  allowunannotated=$(git config --type=bool hooks.allowunannotated)
+  allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
+  denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
+  allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
+  allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
+  
+  # check for no description
+  projectdesc=$(sed -e '1q' "$GIT_DIR/description")
+  case "$projectdesc" in
+  "Unnamed repository"* | "")
+  	echo "*** Project description file hasn't been set" >&2
+  	exit 1
+  	;;
+  esac
+  
+  # --- Check types
+  # if $newrev is 0000...0000, it's a commit to delete a ref.
+  zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+  if [ "$newrev" = "$zero" ]; then
+  	newrev_type=delete
+  else
+  	newrev_type=$(git cat-file -t $newrev)
+  fi
+  
+  case "$refname","$newrev_type" in
+  	refs/tags/*,commit)
+  		# un-annotated tag
+  		short_refname=${refname##refs/tags/}
+  		if [ "$allowunannotated" != "true" ]; then
+  			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
+  			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
+  			exit 1
+  		fi
+  		;;
+  	refs/tags/*,delete)
+  		# delete tag
+  		if [ "$allowdeletetag" != "true" ]; then
+  			echo "*** Deleting a tag is not allowed in this repository" >&2
+  			exit 1
+  		fi
+  		;;
+  	refs/tags/*,tag)
+  		# annotated tag
+  		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
+  		then
+  			echo "*** Tag '$refname' already exists." >&2
+  			echo "*** Modifying a tag is not allowed in this repository." >&2
+  			exit 1
+  		fi
+  		;;
+  	refs/heads/*,commit)
+  		# branch
+  		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
+  			echo "*** Creating a branch is not allowed in this repository" >&2
+  			exit 1
+  		fi
+  		;;
+  	refs/heads/*,delete)
+  		# delete branch
+  		if [ "$allowdeletebranch" != "true" ]; then
+  			echo "*** Deleting a branch is not allowed in this repository" >&2
+  			exit 1
+  		fi
+  		;;
+  	refs/remotes/*,commit)
+  		# tracking branch
+  		;;
+  	refs/remotes/*,delete)
+  		# delete tracking branch
+  		if [ "$allowdeletebranch" != "true" ]; then
+  			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
+  			exit 1
+  		fi
+  		;;
+  	*)
+  		# Anything else (is there anything else?)
+  		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
+  		exit 1
+  		;;
+  esac
+  
+  # --- Finished
+  exit 0
+│   ├── index
+  [Error: 'utf-8' codec can't decode byte 0xdb in position 23: invalid continuation byte]
+│   ├── info
+│   │   └── exclude
+  # git ls-files --others --exclude-from=.git/info/exclude
+  # Lines that start with '#' are comments.
+  # For a project mostly in C, the following would be a good set of
+  # exclude patterns (uncomment them if you want to use them):
+  # *.[oa]
+  # *~
+│   ├── logs
+│   │   ├── HEAD
+  0000000000000000000000000000000000000000 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406912 +0330	commit (initial): first commit
+  41cf2748d9abf533a9fc436c7426ee28717c15e5 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791406915 +0330	Branch: renamed refs/heads/master to refs/heads/main
+  0000000000000000000000000000000000000000 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406915 +0330	Branch: renamed refs/heads/master to refs/heads/main
+  41cf2748d9abf533a9fc436c7426ee28717c15e5 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407206 +0330	commit: first commit
+  12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791407644 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407644 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 30b9ac67f04c381bda90694dc403b6361c79d818 muvixo <godarshia20@gmail.com> 1791407646 +0330	commit: first commit
+  30b9ac67f04c381bda90694dc403b6361c79d818 b1e703f8069bf2f95bf84b7966db81d5fb5ef16a muvixo <godarshia20@gmail.com> 1791407802 +0330	commit: first commit
+  b1e703f8069bf2f95bf84b7966db81d5fb5ef16a 6374af337c6660959397208097ded389a7ce1015 muvixo <godarshia20@gmail.com> 1791407883 +0330	commit: first commit
+  6374af337c6660959397208097ded389a7ce1015 0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c muvixo <godarshia20@gmail.com> 1791408017 +0330	commit: first commit
+  0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c 9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa muvixo <godarshia20@gmail.com> 1791408273 +0330	commit: first commit
+  9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa 766322c8dc1ccaa56c360c9845d29bf115664277 muvixo <godarshia20@gmail.com> 1791408380 +0330	commit: sik
+  766322c8dc1ccaa56c360c9845d29bf115664277 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409076 +0330	commit: first commit
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791409081 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409081 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791409151 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409151 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 946319b8b6fa60ad2302f30c7d866b26f36af526 muvixo <godarshia20@gmail.com> 1791409228 +0330	commit: first commit
+  946319b8b6fa60ad2302f30c7d866b26f36af526 2f65a98cf5a366440478534dc3b2667a82246377 muvixo <godarshia20@gmail.com> 1791409336 +0330	commit: first commit
+  2f65a98cf5a366440478534dc3b2667a82246377 f484e01703fe2a04e6722b403905e18f479c1e3f muvixo <godarshia20@gmail.com> 1791409480 +0330	commit: first commit
+  f484e01703fe2a04e6722b403905e18f479c1e3f 88e7f23060916ca1201d14bb2d76487866748044 muvixo <godarshia20@gmail.com> 1791409634 +0330	commit: first commit
+│   │   └── refs
+│   │       ├── heads
+│   │       │   └── main
+  0000000000000000000000000000000000000000 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406912 +0330	commit (initial): first commit
+  41cf2748d9abf533a9fc436c7426ee28717c15e5 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406915 +0330	Branch: renamed refs/heads/master to refs/heads/main
+  41cf2748d9abf533a9fc436c7426ee28717c15e5 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407206 +0330	commit: first commit
+  12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407644 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 30b9ac67f04c381bda90694dc403b6361c79d818 muvixo <godarshia20@gmail.com> 1791407646 +0330	commit: first commit
+  30b9ac67f04c381bda90694dc403b6361c79d818 b1e703f8069bf2f95bf84b7966db81d5fb5ef16a muvixo <godarshia20@gmail.com> 1791407802 +0330	commit: first commit
+  b1e703f8069bf2f95bf84b7966db81d5fb5ef16a 6374af337c6660959397208097ded389a7ce1015 muvixo <godarshia20@gmail.com> 1791407883 +0330	commit: first commit
+  6374af337c6660959397208097ded389a7ce1015 0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c muvixo <godarshia20@gmail.com> 1791408017 +0330	commit: first commit
+  0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c 9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa muvixo <godarshia20@gmail.com> 1791408273 +0330	commit: first commit
+  9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa 766322c8dc1ccaa56c360c9845d29bf115664277 muvixo <godarshia20@gmail.com> 1791408380 +0330	commit: sik
+  766322c8dc1ccaa56c360c9845d29bf115664277 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409076 +0330	commit: first commit
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409081 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409151 +0330	Branch: renamed refs/heads/main to refs/heads/main
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 946319b8b6fa60ad2302f30c7d866b26f36af526 muvixo <godarshia20@gmail.com> 1791409228 +0330	commit: first commit
+  946319b8b6fa60ad2302f30c7d866b26f36af526 2f65a98cf5a366440478534dc3b2667a82246377 muvixo <godarshia20@gmail.com> 1791409336 +0330	commit: first commit
+  2f65a98cf5a366440478534dc3b2667a82246377 f484e01703fe2a04e6722b403905e18f479c1e3f muvixo <godarshia20@gmail.com> 1791409480 +0330	commit: first commit
+  f484e01703fe2a04e6722b403905e18f479c1e3f 88e7f23060916ca1201d14bb2d76487866748044 muvixo <godarshia20@gmail.com> 1791409634 +0330	commit: first commit
+│   │       └── remotes
+│   │           └── origin
+│   │               └── main
+  0000000000000000000000000000000000000000 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409173 +0330	update by push
+  9fe1ebc182a9a6e9464d697b40efad2ecc328e64 946319b8b6fa60ad2302f30c7d866b26f36af526 muvixo <godarshia20@gmail.com> 1791409241 +0330	update by push
+  946319b8b6fa60ad2302f30c7d866b26f36af526 2f65a98cf5a366440478534dc3b2667a82246377 muvixo <godarshia20@gmail.com> 1791409346 +0330	update by push
+  2f65a98cf5a366440478534dc3b2667a82246377 f484e01703fe2a04e6722b403905e18f479c1e3f muvixo <godarshia20@gmail.com> 1791409497 +0330	update by push
+  f484e01703fe2a04e6722b403905e18f479c1e3f 88e7f23060916ca1201d14bb2d76487866748044 muvixo <godarshia20@gmail.com> 1791409654 +0330	update by push
+│   ├── objects
+│   │   ├── 01
+│   │   │   └── c7ae2bf0565dfbc2d5ee1d4f668d8d95c6b7d4
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── 08
+│   │   │   ├── 2f21ea859d6a19e39af77eab45e754d0f5e0d2
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   │   └── c9957ffde13bc016b6c21952d979bdb10dc7bb
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 0a
+│   │   │   └── 9782834dae8d3c4555cd8bfae92d2f4a354098
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 0b
+│   │   │   └── 1595012359c750916780b4ea9c5d8f14984e6d
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 0c
+│   │   │   └── b036b591c8ed787ebc9bd7adc79098ea3b57ed
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 0d
+│   │   │   └── cec70fcf4a862f3ab0e7cb21c954c2f749ea3c
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 0f
+│   │   │   └── f7a739452601f8bae19257600f85ab6b3729fd
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 11
+│   │   │   ├── 6892ecc00f42600d98926ebdecce08fb3e7ca3
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   └── 80de4042791c087b5e28e8f7ba12fa4f7678d3
+  [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+│   │   ├── 12
+│   │   │   ├── 05bf78b9d34cb785af5a4fd00aa487ef67788d
+  [Error: 'utf-8' codec can't decode byte 0xb1 in position 4: invalid start byte]
+│   │   │   ├── dae817a30d1f8002f6347d6980f68a8ac10773
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   └── e2cb66331fdeed7e9cbd3d2ef51763fe633d44
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 15
+│   │   │   └── 30c14bfba1581679a2705e3f2b305b12e762cb
+  [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+│   │   ├── 16
+│   │   │   └── 09a22badcd1d0b7da99822fce2096820587bb6
+  [Error: 'utf-8' codec can't decode byte 0xb4 in position 8: invalid start byte]
+│   │   ├── 17
+│   │   │   ├── 40a257d70ecb11603d42b8eabc604271e40123
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   └── e03aa5bab41d97f14d5a389182ad08e1a47641
+  [Error: 'utf-8' codec can't decode byte 0xed in position 2: invalid continuation byte]
+│   │   ├── 18
+│   │   │   └── bab38a9aa3e56756e207b2d04488adc803de83
+  [Error: 'utf-8' codec can't decode byte 0xb6 in position 8: invalid start byte]
+│   │   ├── 1a
+│   │   │   └── 59c8876a78421b1f6a399f796ffe9cfc893ac7
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 1e
+│   │   │   └── 58b4ee381283158a40a4269284e5ee1f56f5e7
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 20
+│   │   │   └── 55665ee370e44501d384a41a23382ca78c7e84
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 24
+│   │   │   └── 9b3eae3bb8015e027e508c782d8dbd0091c468
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 25
+│   │   │   └── 626a1451cb44957a545d16ff02e8ea3e958653
+  [Error: 'utf-8' codec can't decode byte 0xa5 in position 2: invalid start byte]
+│   │   ├── 28
+│   │   │   └── 1b232b2faf444f8bf4960aba36f7957e8509a0
+  [Error: 'utf-8' codec can't decode byte 0xdd in position 2: invalid continuation byte]
+│   │   ├── 29
+│   │   │   └── 1221a3f8f66fed8868c392637f259130950a4c
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 2e
+│   │   │   └── 5f2e7f828d18c8e60d30562cdbf5716acb51fe
+  [Error: 'utf-8' codec can't decode byte 0xb4 in position 8: invalid start byte]
+│   │   ├── 2f
+│   │   │   ├── 3c7a0ea2e06c785c98e8ddd39877d47e715780
+  [Error: 'utf-8' codec can't decode byte 0xb1 in position 9: invalid start byte]
+│   │   │   └── 65a98cf5a366440478534dc3b2667a82246377
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 30
+│   │   │   └── b9ac67f04c381bda90694dc403b6361c79d818
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 34
+│   │   │   ├── 485b7fb3357347790fd2ca1a93a9fc5be444c7
+  [Error: 'utf-8' codec can't decode byte 0xae in position 20: invalid start byte]
+│   │   │   ├── 8302d84d375b6eb085fc989362ac8c4f4e70e7
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   └── eee24294257e87f14dc3afea9afe9d33f5ae98
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   ├── 36
+│   │   │   └── 44eb8ce87f61d77076c6acb8e2f5922ce780a1
+  [Error: 'utf-8' codec can't decode byte 0xe5 in position 2: invalid continuation byte]
+│   │   ├── 3b
+│   │   │   └── 52472bf956df26b365bfad1e1ed63714469c9e
+  [Error: 'utf-8' codec can't decode byte 0x92 in position 3: invalid start byte]
+│   │   ├── 3e
+│   │   │   ├── 0a06fec0209d6fa27beb6cbfc97fd85d5bd6fc
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 16: invalid start byte]
+│   │   │   └── 6cb489f4c179ac6f37acf715b93c92229b5ae4
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 3f
+│   │   │   └── 6afbfd2869c3c2cd0f50f8a51d576a91c4183c
+  [Error: 'utf-8' codec can't decode byte 0xf0 in position 18: invalid continuation byte]
+│   │   ├── 41
+│   │   │   ├── 34e47069c12ef2cc8f16079f424a0fac7d09f9
+  [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+│   │   │   ├── ccb3176212e60cd0fe37a0d84da122a5c29324
+  [Error: 'utf-8' codec can't decode byte 0xdb in position 6: invalid continuation byte]
+│   │   │   └── cf2748d9abf533a9fc436c7426ee28717c15e5
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 43
+│   │   │   └── 73b17b96d2f3b0181b5e81927d16cfbdba151e
+  [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+│   │   ├── 44
+│   │   │   └── 63db4303ac73c57066bf26f0d3365c89544d35
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   ├── 46
+│   │   │   └── 87f10d44318a20e255edb8b3e0307ea0736e8e
+  [Error: 'utf-8' codec can't decode byte 0xca in position 3: invalid continuation byte]
+│   │   ├── 47
+│   │   │   └── 9bae082f72e464ba14dbfdc317cf25a3bf26d7
+  [Error: 'utf-8' codec can't decode byte 0xb5 in position 2: invalid start byte]
+│   │   ├── 4a
+│   │   │   ├── 0e3ca5f1ce01afe39c03c747a73f8fbb3bf8db
+  [Error: 'utf-8' codec can't decode byte 0xb1 in position 9: invalid start byte]
+│   │   │   └── b9e7c21ae2f7615fcb055ae93cbedc07ce1623
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 51
+│   │   │   └── 7a8d82dcd757af920c414b631730a5e17d2f67
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   ├── 57
+│   │   │   └── 7e060dbbe9bfbc9e3d24960c7a52a2a830d149
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 58
+│   │   │   └── 1cd5e0e1c962dd13b8b4e3433470b35528f0e6
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 59
+│   │   │   └── 548674df9ede0d41483623c79177feeaea793a
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 5a
+│   │   │   └── cae57087b36bd46f9d67f048577fcee1f222d7
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 5c
+│   │   │   └── 596f38beddc553505f335e6466a37bd4117533
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 5d
+│   │   │   └── 32720a833b54a14eea508e9e2468e76e193a65
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 60
+│   │   │   ├── 360b3361400f8bddfed5f38c98396c4cf6211c
+  [Error: 'utf-8' codec can't decode byte 0xb6 in position 8: invalid start byte]
+│   │   │   └── 477e205f08a6385b01983dde8d40838713fa01
+  [Error: 'utf-8' codec can't decode byte 0xb1 in position 8: invalid start byte]
+│   │   ├── 63
+│   │   │   └── 74af337c6660959397208097ded389a7ce1015
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 66
+│   │   │   ├── 3911bc8c7406ac8e27fa09fd7dcf7bbc90a1c3
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   ├── 592dc90efd193076c735200eeab082985e94ae
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   └── e587fb06df628ceef490c6ac4c86772a29b663
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 68
+│   │   │   ├── 94464020959dbde52463f087eb0a048deea012
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   │   └── a9d8a7904ea2c7092ecefeb887b576bb831336
+  [Error: 'utf-8' codec can't decode byte 0xb0 in position 9: invalid start byte]
+│   │   ├── 69
+│   │   │   └── 0b46e3a591a91b213e552f6653d039a9e8c42c
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 6b
+│   │   │   ├── 30fe55cc120ce39d0b5e6883a0e56c637f2b3b
+  [Error: 'utf-8' codec can't decode byte 0xa5 in position 2: invalid start byte]
+│   │   │   └── d77ec9530c27dd890cfd574b2967ab62c980ab
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 2: invalid start byte]
+│   │   ├── 6d
+│   │   │   └── 3a9e8cd4581a33e49f323f09b730d81d0fc641
+  [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+│   │   ├── 6e
+│   │   │   └── 3cd8bd3492cb55d23d40b72f3562d59a441356
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   ├── 6f
+│   │   │   └── b65144eb28772a0f19bd478fe31345d2f32481
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── 72
+│   │   │   ├── 4794ccc211a5dc4234ef4c7e8a58dd40a37b93
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   │   └── ad4720c820434cd673b07d70b105f1e2c35cac
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 76
+│   │   │   ├── 6322c8dc1ccaa56c360c9845d29bf115664277
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   │   └── de8f0ae4f8066f61e88a27970dc4b27d6de9dc
+  [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+│   │   ├── 78
+│   │   │   └── fffe6836c91f484ba0a79952fcfb959f983170
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 7c
+│   │   │   └── ef7a569150611c9415b869e4624591630e0746
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 2: invalid start byte]
+│   │   ├── 7f
+│   │   │   ├── 95bef2db4f22fc251c8f81429af55f3e4d89e6
+  [Error: 'utf-8' codec can't decode byte 0x8f in position 3: invalid start byte]
+│   │   │   └── eb6b1c414d5fcbbe579a0ef2e72eba826d23fa
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 2: invalid start byte]
+│   │   ├── 80
+│   │   │   └── 28fe84c6eec6cdbc1c5ac1750a7aa6bb65745d
+  [Error: 'utf-8' codec can't decode byte 0xcb in position 4: invalid continuation byte]
+│   │   ├── 82
+│   │   │   └── 8b8ec8c81b0b71dc8643cb0d9ba29ec2ed2670
+  [Error: 'utf-8' codec can't decode byte 0xae in position 19: invalid start byte]
+│   │   ├── 83
+│   │   │   ├── 58ce6304ef00e72838801eb21851467aab2097
+  [Error: 'utf-8' codec can't decode byte 0xc8 in position 3: invalid continuation byte]
+│   │   │   └── c0fc89b663f7cea47641412e3db41d0278a43a
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 84
+│   │   │   └── 874e9c2100516f923c61a75350fbc58507c413
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── 88
+│   │   │   └── e7f23060916ca1201d14bb2d76487866748044
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 8a
+│   │   │   ├── 39863da72ed1c87c4305c2adba4a7abffa872d
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   │   ├── 3c7b4b110ef44e2787f472919ec67311482083
+  [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+│   │   │   └── dee07e706a16aa2bf3a88a084e8f9273860e6e
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 8c
+│   │   │   └── 369f2eeea76c3d7f645e23d197e2141cfdbc8d
+  [Error: 'utf-8' codec can't decode byte 0xdb in position 4: invalid continuation byte]
+│   │   ├── 8e
+│   │   │   └── 6ea455047f108dee9f0a381bb191d9882b4f98
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 90
+│   │   │   └── bf1edb4fdf91098c1dcc536b37b9195c48453e
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── 93
+│   │   │   └── a0171f889450ef64b95b70f996de73e3b37897
+  [Error: 'utf-8' codec can't decode byte 0x91 in position 3: invalid start byte]
+│   │   ├── 94
+│   │   │   ├── 6319b8b6fa60ad2302f30c7d866b26f36af526
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   │   └── 9729cec4849be60637c6c3ed2038976afab4c4
+  [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+│   │   ├── 96
+│   │   │   ├── 61d8f19782ac1308d3d4a46517e32d372ee06f
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   │   └── d4042b868557743eb4aa2a63311e52789328d0
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   ├── 97
+│   │   │   └── acf392f9756c5c10fbf89b8fc514db57bcc58e
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   ├── 99
+│   │   │   └── 9d47bc4d839dff39046f9906071a50449f2550
+  [Error: 'utf-8' codec can't decode byte 0xcb in position 3: invalid continuation byte]
+│   │   ├── 9a
+│   │   │   └── 5cef71693abb46c24615e3ee6bc788b2adb7bf
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── 9b
+│   │   │   ├── 2d54ee1912687416f034c608b6db47257e931a
+  [Error: 'utf-8' codec can't decode byte 0xb6 in position 8: invalid start byte]
+│   │   │   └── 4d45d6d8c22697fd050a8e268958dab2a53ac3
+  [Error: 'utf-8' codec can't decode byte 0xb0 in position 9: invalid start byte]
+│   │   ├── 9d
+│   │   │   └── eb28f8286b5049a2c1b1e8515bcf64e39c6b59
+  [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+│   │   ├── 9e
+│   │   │   └── 50b40c9e0ba934c57f985d02c8beaa7e40a8fa
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── 9f
+│   │   │   └── e1ebc182a9a6e9464d697b40efad2ecc328e64
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── a0
+│   │   │   └── 6505795c1db61c473ebfbe060fab979bba0bf6
+  [Error: 'utf-8' codec can't decode byte 0xb5 in position 2: invalid start byte]
+│   │   ├── a3
+│   │   │   └── 405b0617f5eb98578f0647d756cc20ab8702f3
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── a5
+│   │   │   └── 0e2f2b65036a99f52a4678ddd38a210a0de7c8
+  [Error: 'utf-8' codec can't decode byte 0xdb in position 6: invalid continuation byte]
+│   │   ├── a7
+│   │   │   └── 2afd95306982c1e72572909f1ed593bfebabd5
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   ├── a9
+│   │   │   ├── 0607ac156ee9c2520f1c43c741a218e9b77743
+  [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+│   │   │   └── 11708d560f7ef98ba572cdfc72b71f98a65b57
+  [Error: 'utf-8' codec can't decode byte 0xdb in position 6: invalid continuation byte]
+│   │   ├── ac
+│   │   │   └── 1a708ce881d467bcab30d0714a3644dc2baea2
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   ├── ad
+│   │   │   └── 38f046c3f273e5dfbd9162081ef2f81ecc1300
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── ae
+│   │   │   └── bc2bf568819c601f8387dd4efd6da5e33e270a
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   ├── b1
+│   │   │   └── e703f8069bf2f95bf84b7966db81d5fb5ef16a
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── b3
+│   │   │   └── 66e36ecf6871bbbc90c9e61f727cde8d59fdfa
+  [Error: 'utf-8' codec can't decode byte 0xb6 in position 9: invalid start byte]
+│   │   ├── b6
+│   │   │   └── 7e1a16de03672f0b3079f03dd0bb14c9bd5e43
+  [Error: 'utf-8' codec can't decode byte 0xca in position 3: invalid continuation byte]
+│   │   ├── b7
+│   │   │   └── 7ca4ab13e2a204388a614672bc5a87d5db80c0
+  [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+│   │   ├── bb
+│   │   │   └── 4fd82e8e829c5a80399434b6ec55ab082e3325
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── bd
+│   │   │   ├── 56cb1947d98adb14995033345f9680fe1e0dec
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   │   └── dae3fef6db458763fe84c59f4045517e4586e4
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── c0
+│   │   │   ├── a64228d6e1b9282c74d8c649394f38cbbb58d3
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   │   └── d8a1a845106517249917b2fa027c91e334bdae
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── c5
+│   │   │   ├── 0b714d7f756b8f448e21aa054b45803f85d35f
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   │   ├── da3f8f564b44b31eabe618d3f7d448bbe24fd6
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 16: invalid start byte]
+│   │   │   └── deff29dfba443a78af2a4832e57d99a2eeb6ed
+  [Error: 'utf-8' codec can't decode byte 0xb4 in position 8: invalid start byte]
+│   │   ├── c6
+│   │   │   └── d082a134ca86750258a70f20eee1b5871c645e
+  [Error: 'utf-8' codec can't decode byte 0xae in position 20: invalid start byte]
+│   │   ├── ca
+│   │   │   └── 5b493626512bf1933b15540ead4a608288442d
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── ce
+│   │   │   └── 766a9471e65262ca3967d891e488496fc50064
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── d1
+│   │   │   └── 0eda86145b5104cbf6a3db924b6aafab96a683
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── d3
+│   │   │   ├── 65896f14dad8d2a3ab0e68cf9fbeb1a41fd289
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 16: invalid start byte]
+│   │   │   └── f7812c83e25f7aef9a3f9d30cbd9ae9106c6c7
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── d4
+│   │   │   └── 9d09c2fc9ed06a0c39f507f151e4ba7211d5c2
+  [Error: 'utf-8' codec can't decode byte 0xb3 in position 9: invalid start byte]
+│   │   ├── d8
+│   │   │   ├── 5efe33ce29fa6152a7a02ec57789c128b44076
+  [Error: 'utf-8' codec can't decode byte 0xb1 in position 9: invalid start byte]
+│   │   │   └── 8c2615085ddd2a3ff32396b561091ec3f0f0b0
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── da
+│   │   │   └── 7201f9d71c4739180fbb2b93adbd0cd424b9cb
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── db
+│   │   │   ├── 81b52780844398cb7f5484d5d4531f6b83e019
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   │   └── ff39c478d6ce42a7420d91c6601c867ad8edb6
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 2: invalid start byte]
+│   │   ├── de
+│   │   │   └── 850024fd0dd3e44a306b4b91e80b101a90e44b
+  [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+│   │   ├── e0
+│   │   │   └── 536cb81507642c8833c6aa40a6553052e112f3
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── e2
+│   │   │   └── 9214742692f0a1a763400ce237c6ab9f047ab9
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── e5
+│   │   │   └── 35a05170f8eea0f72e005c449e17b30de074c7
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── e6
+│   │   │   └── 3bafa5fbd49baddbbaf663e0e4e50c0711c372
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── e7
+│   │   │   └── 7130bf3ed3144c9c1a22e747251cfae119614b
+  [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+│   │   ├── eb
+│   │   │   └── f73fb1e6a425d7c00122ad39ab99c84881887a
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 16: invalid start byte]
+│   │   ├── ed
+│   │   │   └── 190720929b44a9420a0c7fd57df469ec89368f
+  [Error: 'utf-8' codec can't decode byte 0xb0 in position 7: invalid start byte]
+│   │   ├── ee
+│   │   │   └── 8193594df7619ecb50bf5b636c1410cc7ece98
+  [Error: 'utf-8' codec can't decode byte 0xbd in position 16: invalid start byte]
+│   │   ├── f0
+│   │   │   ├── 324c41a4ee94ca6368821f419e715e647ecb04
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   │   └── 62c0be0e1b61db1455df979357898cfa2e42c6
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── f1
+│   │   │   └── d5fca48402c606f9353728489ecff097022672
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 2: invalid start byte]
+│   │   ├── f3
+│   │   │   └── 2093bdbcffbd72c1a160315524137e4066c8d7
+  [Error: 'utf-8' codec can't decode byte 0xb1 in position 9: invalid start byte]
+│   │   ├── f4
+│   │   │   ├── 509c75d7c570a2dd5fb9f081ff9fa05544a88b
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 2: invalid continuation byte]
+│   │   │   └── 84e01703fe2a04e6722b403905e18f479c1e3f
+  [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+│   │   ├── f6
+│   │   │   └── 8471879b9b56209563b0ff51c653911fe57a37
+  [Error: 'utf-8' codec can't decode byte 0xc5 in position 2: invalid continuation byte]
+│   │   ├── f7
+│   │   │   ├── 50d89b933f1152f5c1033b21f4fe7c4c1b6726
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   │   └── cd8712bebbcb948c4c3601707e2e67dc94ab93
+  [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+│   │   ├── f9
+│   │   │   └── 7e2190b81dfb55f4c3de12b642cb243d6dc931
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── fb
+│   │   │   └── d3052ef3cdc54325b06b8924c4cb72817d1ccf
+  [Error: 'utf-8' codec can't decode byte 0xed in position 2: invalid continuation byte]
+│   │   ├── fd
+│   │   │   └── 91511fa5e06cfc8603206e032dbe354970e69c
+  [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+│   │   ├── fe
+│   │   │   └── 1816a4737a52b40bfa036ec7860968964867cd
+  [Error: 'utf-8' codec can't decode byte 0xca in position 3: invalid continuation byte]
+│   │   ├── ff
+│   │   │   └── 41daafa79b6570d248aff60c21d2c4a2f5b9d8
+  [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+│   │   ├── info
+│   │   └── pack
+│   └── refs
+│       ├── heads
+│       │   └── main
+  88e7f23060916ca1201d14bb2d76487866748044
+│       ├── remotes
+│       │   └── origin
+│       │       └── main
+  88e7f23060916ca1201d14bb2d76487866748044
+│       └── tags
+├── .github
+│   └── workflows
+│       └── build.yml
+  name: Build mod
+  
+  on:
+    push:
+    pull_request:
+    workflow_dispatch:
+  
+  jobs:
+    build:
+      runs-on: ubuntu-22.04
+      steps:
+        - uses: actions/checkout@v4
+  
+        - uses: actions/setup-java@v4
+          with:
+            distribution: temurin
+            java-version: '8'
+  
+        - name: Cache Gradle / ForgeGradle
+          uses: actions/cache@v4
+          with:
+            path: |
+              ~/.gradle/caches
+            key: ${{ runner.os }}-fg21-${{ hashFiles('build.gradle', 'gradle.properties') }}
+            restore-keys: |
+              ${{ runner.os }}-fg21-
+  
+        # ForgeGradle 2.1 only works with Gradle 2.14.1, so we install it directly.
+        - name: Install Gradle 2.14.1
+          run: |
+            curl -fsSL -o gradle.zip https://services.gradle.org/distributions/gradle-2.14.1-bin.zip
+            unzip -q gradle.zip -d "$HOME"
+            echo "$HOME/gradle-2.14.1/bin" >> "$GITHUB_PATH"
+  
+        - name: Build
+          run: gradle setupCIWorkspace build --no-daemon --stacktrace
+  
+        - name: Upload jar
+          uses: actions/upload-artifact@v4
+          with:
+            name: AsyncMenus-jar
+            path: |
+              build/libs/*.jar
+              !build/libs/*-sources.jar
+            if-no-files-found: error
+├── .gitignore
+  .gradle/
+  build/
+  run/
+  .idea/
+  *.iml
+  .classpath
+  .project
+  .settings/
+  bin/
+  out/
+├── build.gradle
+  buildscript {
+      repositories {
+          mavenCentral()
+          jcenter()
+          maven { name = "forge"; url = "https://maven.minecraftforge.net/" }
+          maven { name = "sponge"; url = "https://repo.spongepowered.org/maven" }
+      }
+      dependencies {
+          classpath 'net.minecraftforge.gradle:ForgeGradle:2.1-SNAPSHOT'
+      }
+  }
+  
+  apply plugin: 'net.minecraftforge.gradle.forge'
+  
+  version = mod_version
+  group = mod_group
+  archivesBaseName = mod_name
+  
+  sourceCompatibility = targetCompatibility = '1.8'
+  compileJava.options.encoding = 'UTF-8'
+  
+  minecraft {
+      version = "1.8.9-11.15.1.2318-1.8.9"
+      runDir = "run"
+      mappings = "stable_22"
+  }
+  
+  processResources {
+      inputs.property "version", project.version
+      inputs.property "mcversion", project.minecraft.version
+  
+      from(sourceSets.main.resources.srcDirs) {
+          include 'mcmod.info'
+          expand 'version': project.version, 'mcversion': project.minecraft.version
+      }
+      from(sourceSets.main.resources.srcDirs) {
+          exclude 'mcmod.info'
+      }
+  }
+├── ee.py
+  import os
+  
+  def print_tree(folder_path, file_handle, prefix="", show_content=False):
+      entries = sorted(os.listdir(folder_path))
+      for i, entry in enumerate(entries):
+          path = os.path.join(folder_path, entry)
+          is_last = i == len(entries) - 1
+          connector = "└── " if is_last else "├── "
+          file_handle.write(f"{prefix}{connector}{entry}\n")
+  
+          if os.path.isdir(path):
+              extension_prefix = "    " if is_last else "│   "
+              print_tree(path, file_handle, prefix + extension_prefix, show_content)
+          else:
+              if show_content:
+                  try:
+                      with open(path, "r", encoding="utf-8") as f:
+                          content = f.read().strip()
+                          if content:
+                              content_lines = content.splitlines()
+                              # Content appears directly under the file name
+                              for line in content_lines:
+                                  file_handle.write(f"  {line}\n")  # Just 2 spaces
+                  except Exception as e:
+                      file_handle.write(f"  [Error: {e}]\n")
+  
+  def save_tree_to_file(output_filename="folder_structure.txt"):
+      current_folder = os.path.dirname(os.path.abspath(__file__))
+      
+      with open(output_filename, "w", encoding="utf-8") as f:
+          f.write(f"{current_folder}/\n\n")
+          print_tree(current_folder, f, show_content=True)
+      
+      print(f"Output saved to {output_filename}")
+  
+  if __name__ == "__main__":
+      save_tree_to_file()
+├── folder_structure.txt
+  C:\Users\nasle javan\Downloads\OryvexClient-source/
+  
+  ├── .git
+  │   ├── COMMIT_EDITMSG
+    first commit
+  │   ├── HEAD
+    ref: refs/heads/main
+  │   ├── config
+    [core]
+    	repositoryformatversion = 0
+    	filemode = false
+    	bare = false
+    	logallrefupdates = true
+    	symlinks = false
+    	ignorecase = true
+    [remote "origin"]
+    	url = https://github.com/bbblofficial/GeminiClient.git
+    	fetch = +refs/heads/*:refs/remotes/origin/*
+    [branch "main"]
+    	remote = origin
+    	merge = refs/heads/main
+  │   ├── description
+    Unnamed repository; edit this file 'description' to name the repository.
+  │   ├── hooks
+  │   │   ├── applypatch-msg.sample
+    #!/bin/sh
+    #
+    # An example hook script to check the commit log message taken by
+    # applypatch from an e-mail message.
+    #
+    # The hook should exit with non-zero status after issuing an
+    # appropriate message if it wants to stop the commit.  The hook is
+    # allowed to edit the commit message file.
+    #
+    # To enable this hook, rename this file to "applypatch-msg".
+    
+    . git-sh-setup
+    commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
+    test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
+    :
+  │   │   ├── commit-msg.sample
+    #!/bin/sh
+    #
+    # An example hook script to check the commit log message.
+    # Called by "git commit" with one argument, the name of the file
+    # that has the commit message.  The hook should exit with non-zero
+    # status after issuing an appropriate message if it wants to stop the
+    # commit.  The hook is allowed to edit the commit message file.
+    #
+    # To enable this hook, rename this file to "commit-msg".
+    
+    # Uncomment the below to add a Signed-off-by line to the message.
+    # Doing this in a hook is a bad idea in general, but the prepare-commit-msg
+    # hook is more suited to it.
+    #
+    # SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+    # grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
+    
+    # This example catches duplicate Signed-off-by lines.
+    
+    test "" = "$(grep '^Signed-off-by: ' "$1" |
+    	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
+    	echo >&2 Duplicate Signed-off-by lines.
+    	exit 1
+    }
+  │   │   ├── fsmonitor-watchman.sample
+    #!/usr/bin/perl
+    
+    use strict;
+    use warnings;
+    use IPC::Open2;
+    
+    # An example hook script to integrate Watchman
+    # (https://facebook.github.io/watchman/) with git to speed up detecting
+    # new and modified files.
+    #
+    # The hook is passed a version (currently 2) and last update token
+    # formatted as a string and outputs to stdout a new update token and
+    # all files that have been modified since the update token. Paths must
+    # be relative to the root of the working tree and separated by a single NUL.
+    #
+    # To enable this hook, rename this file to "query-watchman" and set
+    # 'git config core.fsmonitor .git/hooks/query-watchman'
+    #
+    my ($version, $last_update_token) = @ARGV;
+    
+    # Uncomment for debugging
+    # print STDERR "$0 $version $last_update_token\n";
+    
+    # Check the hook interface version
+    if ($version ne 2) {
+    	die "Unsupported query-fsmonitor hook version '$version'.\n" .
+    	    "Falling back to scanning...\n";
+    }
+    
+    my $git_work_tree = get_working_dir();
+    
+    my $retry = 1;
+    
+    my $json_pkg;
+    eval {
+    	require JSON::XS;
+    	$json_pkg = "JSON::XS";
+    	1;
+    } or do {
+    	require JSON::PP;
+    	$json_pkg = "JSON::PP";
+    };
+    
+    launch_watchman();
+    
+    sub launch_watchman {
+    	my $o = watchman_query();
+    	if (is_work_tree_watched($o)) {
+    		output_result($o->{clock}, @{$o->{files}});
+    	}
+    }
+    
+    sub output_result {
+    	my ($clockid, @files) = @_;
+    
+    	# Uncomment for debugging watchman output
+    	# open (my $fh, ">", ".git/watchman-output.out");
+    	# binmode $fh, ":utf8";
+    	# print $fh "$clockid\n@files\n";
+    	# close $fh;
+    
+    	binmode STDOUT, ":utf8";
+    	print $clockid;
+    	print "\0";
+    	local $, = "\0";
+    	print @files;
+    }
+    
+    sub watchman_clock {
+    	my $response = qx/watchman clock "$git_work_tree"/;
+    	die "Failed to get clock id on '$git_work_tree'.\n" .
+    		"Falling back to scanning...\n" if $? != 0;
+    
+    	return $json_pkg->new->utf8->decode($response);
+    }
+    
+    sub watchman_query {
+    	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
+    	or die "open2() failed: $!\n" .
+    	"Falling back to scanning...\n";
+    
+    	# In the query expression below we're asking for names of files that
+    	# changed since $last_update_token but not from the .git folder.
+    	#
+    	# To accomplish this, we're using the "since" generator to use the
+    	# recency index to select candidate nodes and "fields" to limit the
+    	# output to file names only. Then we're using the "expression" term to
+    	# further constrain the results.
+    	my $last_update_line = "";
+    	if (substr($last_update_token, 0, 1) eq "c") {
+    		$last_update_token = "\"$last_update_token\"";
+    		$last_update_line = qq[\n"since": $last_update_token,];
+    	}
+    	my $query = <<"	END";
+    		["query", "$git_work_tree", {$last_update_line
+    			"fields": ["name"],
+    			"expression": ["not", ["dirname", ".git"]]
+    		}]
+    	END
+    
+    	# Uncomment for debugging the watchman query
+    	# open (my $fh, ">", ".git/watchman-query.json");
+    	# print $fh $query;
+    	# close $fh;
+    
+    	print CHLD_IN $query;
+    	close CHLD_IN;
+    	my $response = do {local $/; <CHLD_OUT>};
+    
+    	# Uncomment for debugging the watch response
+    	# open ($fh, ">", ".git/watchman-response.json");
+    	# print $fh $response;
+    	# close $fh;
+    
+    	die "Watchman: command returned no output.\n" .
+    	"Falling back to scanning...\n" if $response eq "";
+    	die "Watchman: command returned invalid output: $response\n" .
+    	"Falling back to scanning...\n" unless $response =~ /^\{/;
+    
+    	return $json_pkg->new->utf8->decode($response);
+    }
+    
+    sub is_work_tree_watched {
+    	my ($output) = @_;
+    	my $error = $output->{error};
+    	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
+    		$retry--;
+    		my $response = qx/watchman watch "$git_work_tree"/;
+    		die "Failed to make watchman watch '$git_work_tree'.\n" .
+    		    "Falling back to scanning...\n" if $? != 0;
+    		$output = $json_pkg->new->utf8->decode($response);
+    		$error = $output->{error};
+    		die "Watchman: $error.\n" .
+    		"Falling back to scanning...\n" if $error;
+    
+    		# Uncomment for debugging watchman output
+    		# open (my $fh, ">", ".git/watchman-output.out");
+    		# close $fh;
+    
+    		# Watchman will always return all files on the first query so
+    		# return the fast "everything is dirty" flag to git and do the
+    		# Watchman query just to get it over with now so we won't pay
+    		# the cost in git to look up each individual file.
+    		my $o = watchman_clock();
+    		$error = $output->{error};
+    
+    		die "Watchman: $error.\n" .
+    		"Falling back to scanning...\n" if $error;
+    
+    		output_result($o->{clock}, ("/"));
+    		$last_update_token = $o->{clock};
+    
+    		eval { launch_watchman() };
+    		return 0;
+    	}
+    
+    	die "Watchman: $error.\n" .
+    	"Falling back to scanning...\n" if $error;
+    
+    	return 1;
+    }
+    
+    sub get_working_dir {
+    	my $working_dir;
+    	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
+    		$working_dir = Win32::GetCwd();
+    		$working_dir =~ tr/\\/\//;
+    	} else {
+    		require Cwd;
+    		$working_dir = Cwd::cwd();
+    	}
+    
+    	return $working_dir;
+    }
+  │   │   ├── post-update.sample
+    #!/bin/sh
+    #
+    # An example hook script to prepare a packed repository for use over
+    # dumb transports.
+    #
+    # To enable this hook, rename this file to "post-update".
+    
+    exec git update-server-info
+  │   │   ├── pre-applypatch.sample
+    #!/bin/sh
+    #
+    # An example hook script to verify what is about to be committed
+    # by applypatch from an e-mail message.
+    #
+    # The hook should exit with non-zero status after issuing an
+    # appropriate message if it wants to stop the commit.
+    #
+    # To enable this hook, rename this file to "pre-applypatch".
+    
+    . git-sh-setup
+    precommit="$(git rev-parse --git-path hooks/pre-commit)"
+    test -x "$precommit" && exec "$precommit" ${1+"$@"}
+    :
+  │   │   ├── pre-commit.sample
+    #!/bin/sh
+    #
+    # An example hook script to verify what is about to be committed.
+    # Called by "git commit" with no arguments.  The hook should
+    # exit with non-zero status after issuing an appropriate message if
+    # it wants to stop the commit.
+    #
+    # To enable this hook, rename this file to "pre-commit".
+    
+    if git rev-parse --verify HEAD >/dev/null 2>&1
+    then
+    	against=HEAD
+    else
+    	# Initial commit: diff against an empty tree object
+    	against=$(git hash-object -t tree /dev/null)
+    fi
+    
+    # If you want to allow non-ASCII filenames set this variable to true.
+    allownonascii=$(git config --type=bool hooks.allownonascii)
+    
+    # Redirect output to stderr.
+    exec 1>&2
+    
+    # Cross platform projects tend to avoid non-ASCII filenames; prevent
+    # them from being added to the repository. We exploit the fact that the
+    # printable range starts at the space character and ends with tilde.
+    if [ "$allownonascii" != "true" ] &&
+    	# Note that the use of brackets around a tr range is ok here, (it's
+    	# even required, for portability to Solaris 10's /usr/bin/tr), since
+    	# the square bracket bytes happen to fall in the designated range.
+    	test $(git diff-index --cached --name-only --diff-filter=A -z $against |
+    	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+    then
+    	cat <<\EOF
+    Error: Attempt to add a non-ASCII file name.
+    
+    This can cause problems if you want to work with people on other platforms.
+    
+    To be portable it is advisable to rename the file.
+    
+    If you know what you are doing you can disable this check using:
+    
+      git config hooks.allownonascii true
+    EOF
+    	exit 1
+    fi
+    
+    # If there are whitespace errors, print the offending file names and fail.
+    exec git diff-index --check --cached $against --
+  │   │   ├── pre-merge-commit.sample
+    #!/bin/sh
+    #
+    # An example hook script to verify what is about to be committed.
+    # Called by "git merge" with no arguments.  The hook should
+    # exit with non-zero status after issuing an appropriate message to
+    # stderr if it wants to stop the merge commit.
+    #
+    # To enable this hook, rename this file to "pre-merge-commit".
+    
+    . git-sh-setup
+    test -x "$GIT_DIR/hooks/pre-commit" &&
+            exec "$GIT_DIR/hooks/pre-commit"
+    :
+  │   │   ├── pre-push.sample
+    #!/bin/sh
+    
+    # An example hook script to verify what is about to be pushed.  Called by "git
+    # push" after it has checked the remote status, but before anything has been
+    # pushed.  If this script exits with a non-zero status nothing will be pushed.
+    #
+    # This hook is called with the following parameters:
+    #
+    # $1 -- Name of the remote to which the push is being done
+    # $2 -- URL to which the push is being done
+    #
+    # If pushing without using a named remote those arguments will be equal.
+    #
+    # Information about the commits which are being pushed is supplied as lines to
+    # the standard input in the form:
+    #
+    #   <local ref> <local oid> <remote ref> <remote oid>
+    #
+    # This sample shows how to prevent push of commits where the log message starts
+    # with "WIP" (work in progress).
+    
+    remote="$1"
+    url="$2"
+    
+    zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+    
+    while read local_ref local_oid remote_ref remote_oid
+    do
+    	if test "$local_oid" = "$zero"
+    	then
+    		# Handle delete
+    		:
+    	else
+    		if test "$remote_oid" = "$zero"
+    		then
+    			# New branch, examine all commits
+    			range="$local_oid"
+    		else
+    			# Update to existing branch, examine new commits
+    			range="$remote_oid..$local_oid"
+    		fi
+    
+    		# Check for WIP commit
+    		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
+    		if test -n "$commit"
+    		then
+    			echo >&2 "Found WIP commit in $local_ref, not pushing"
+    			exit 1
+    		fi
+    	fi
+    done
+    
+    exit 0
+  │   │   ├── pre-rebase.sample
+    #!/bin/sh
+    #
+    # Copyright (c) 2006, 2008 Junio C Hamano
+    #
+    # The "pre-rebase" hook is run just before "git rebase" starts doing
+    # its job, and can prevent the command from running by exiting with
+    # non-zero status.
+    #
+    # The hook is called with the following parameters:
+    #
+    # $1 -- the upstream the series was forked from.
+    # $2 -- the branch being rebased (or empty when rebasing the current branch).
+    #
+    # This sample shows how to prevent topic branches that are already
+    # merged to 'next' branch from getting rebased, because allowing it
+    # would result in rebasing already published history.
+    
+    publish=next
+    basebranch="$1"
+    if test "$#" = 2
+    then
+    	topic="refs/heads/$2"
+    else
+    	topic=`git symbolic-ref HEAD` ||
+    	exit 0 ;# we do not interrupt rebasing detached HEAD
+    fi
+    
+    case "$topic" in
+    refs/heads/??/*)
+    	;;
+    *)
+    	exit 0 ;# we do not interrupt others.
+    	;;
+    esac
+    
+    # Now we are dealing with a topic branch being rebased
+    # on top of master.  Is it OK to rebase it?
+    
+    # Does the topic really exist?
+    git show-ref -q "$topic" || {
+    	echo >&2 "No such branch $topic"
+    	exit 1
+    }
+    
+    # Is topic fully merged to master?
+    not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
+    if test -z "$not_in_master"
+    then
+    	echo >&2 "$topic is fully merged to master; better remove it."
+    	exit 1 ;# we could allow it, but there is no point.
+    fi
+    
+    # Is topic ever merged to next?  If so you should not be rebasing it.
+    only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
+    only_next_2=`git rev-list ^master           ${publish} | sort`
+    if test "$only_next_1" = "$only_next_2"
+    then
+    	not_in_topic=`git rev-list "^$topic" master`
+    	if test -z "$not_in_topic"
+    	then
+    		echo >&2 "$topic is already up to date with master"
+    		exit 1 ;# we could allow it, but there is no point.
+    	else
+    		exit 0
+    	fi
+    else
+    	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
+    	/usr/bin/perl -e '
+    		my $topic = $ARGV[0];
+    		my $msg = "* $topic has commits already merged to public branch:\n";
+    		my (%not_in_next) = map {
+    			/^([0-9a-f]+) /;
+    			($1 => 1);
+    		} split(/\n/, $ARGV[1]);
+    		for my $elem (map {
+    				/^([0-9a-f]+) (.*)$/;
+    				[$1 => $2];
+    			} split(/\n/, $ARGV[2])) {
+    			if (!exists $not_in_next{$elem->[0]}) {
+    				if ($msg) {
+    					print STDERR $msg;
+    					undef $msg;
+    				}
+    				print STDERR " $elem->[1]\n";
+    			}
+    		}
+    	' "$topic" "$not_in_next" "$not_in_master"
+    	exit 1
+    fi
+    
+    <<\DOC_END
+    
+    This sample hook safeguards topic branches that have been
+    published from being rewound.
+    
+    The workflow assumed here is:
+    
+     * Once a topic branch forks from "master", "master" is never
+       merged into it again (either directly or indirectly).
+    
+     * Once a topic branch is fully cooked and merged into "master",
+       it is deleted.  If you need to build on top of it to correct
+       earlier mistakes, a new topic branch is created by forking at
+       the tip of the "master".  This is not strictly necessary, but
+       it makes it easier to keep your history simple.
+    
+     * Whenever you need to test or publish your changes to topic
+       branches, merge them into "next" branch.
+    
+    The script, being an example, hardcodes the publish branch name
+    to be "next", but it is trivial to make it configurable via
+    $GIT_DIR/config mechanism.
+    
+    With this workflow, you would want to know:
+    
+    (1) ... if a topic branch has ever been merged to "next".  Young
+        topic branches can have stupid mistakes you would rather
+        clean up before publishing, and things that have not been
+        merged into other branches can be easily rebased without
+        affecting other people.  But once it is published, you would
+        not want to rewind it.
+    
+    (2) ... if a topic branch has been fully merged to "master".
+        Then you can delete it.  More importantly, you should not
+        build on top of it -- other people may already want to
+        change things related to the topic as patches against your
+        "master", so if you need further changes, it is better to
+        fork the topic (perhaps with the same name) afresh from the
+        tip of "master".
+    
+    Let's look at this example:
+    
+    		   o---o---o---o---o---o---o---o---o---o "next"
+    		  /       /           /           /
+    		 /   a---a---b A     /           /
+    		/   /               /           /
+    	       /   /   c---c---c---c B         /
+    	      /   /   /             \         /
+    	     /   /   /   b---b C     \       /
+    	    /   /   /   /             \     /
+        ---o---o---o---o---o---o---o---o---o---o---o "master"
+    
+    
+    A, B and C are topic branches.
+    
+     * A has one fix since it was merged up to "next".
+    
+     * B has finished.  It has been fully merged up to "master" and "next",
+       and is ready to be deleted.
+    
+     * C has not merged to "next" at all.
+    
+    We would want to allow C to be rebased, refuse A, and encourage
+    B to be deleted.
+    
+    To compute (1):
+    
+    	git rev-list ^master ^topic next
+    	git rev-list ^master        next
+    
+    	if these match, topic has not merged in next at all.
+    
+    To compute (2):
+    
+    	git rev-list master..topic
+    
+    	if this is empty, it is fully merged to "master".
+    
+    DOC_END
+  │   │   ├── pre-receive.sample
+    #!/bin/sh
+    #
+    # An example hook script to make use of push options.
+    # The example simply echoes all push options that start with 'echoback='
+    # and rejects all pushes when the "reject" push option is used.
+    #
+    # To enable this hook, rename this file to "pre-receive".
+    
+    if test -n "$GIT_PUSH_OPTION_COUNT"
+    then
+    	i=0
+    	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
+    	do
+    		eval "value=\$GIT_PUSH_OPTION_$i"
+    		case "$value" in
+    		echoback=*)
+    			echo "echo from the pre-receive-hook: ${value#*=}" >&2
+    			;;
+    		reject)
+    			exit 1
+    		esac
+    		i=$((i + 1))
+    	done
+    fi
+  │   │   ├── prepare-commit-msg.sample
+    #!/bin/sh
+    #
+    # An example hook script to prepare the commit log message.
+    # Called by "git commit" with the name of the file that has the
+    # commit message, followed by the description of the commit
+    # message's source.  The hook's purpose is to edit the commit
+    # message file.  If the hook fails with a non-zero status,
+    # the commit is aborted.
+    #
+    # To enable this hook, rename this file to "prepare-commit-msg".
+    
+    # This hook includes three examples. The first one removes the
+    # "# Please enter the commit message..." help message.
+    #
+    # The second includes the output of "git diff --name-status -r"
+    # into the message, just before the "git status" output.  It is
+    # commented because it doesn't cope with --amend or with squashed
+    # commits.
+    #
+    # The third example adds a Signed-off-by line to the message, that can
+    # still be edited.  This is rarely a good idea.
+    
+    COMMIT_MSG_FILE=$1
+    COMMIT_SOURCE=$2
+    SHA1=$3
+    
+    /usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
+    
+    # case "$COMMIT_SOURCE,$SHA1" in
+    #  ,|template,)
+    #    /usr/bin/perl -i.bak -pe '
+    #       print "\n" . `git diff --cached --name-status -r`
+    # 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
+    #  *) ;;
+    # esac
+    
+    # SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+    # git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
+    # if test -z "$COMMIT_SOURCE"
+    # then
+    #   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
+    # fi
+  │   │   ├── push-to-checkout.sample
+    #!/bin/sh
+    
+    # An example hook script to update a checked-out tree on a git push.
+    #
+    # This hook is invoked by git-receive-pack(1) when it reacts to git
+    # push and updates reference(s) in its repository, and when the push
+    # tries to update the branch that is currently checked out and the
+    # receive.denyCurrentBranch configuration variable is set to
+    # updateInstead.
+    #
+    # By default, such a push is refused if the working tree and the index
+    # of the remote repository has any difference from the currently
+    # checked out commit; when both the working tree and the index match
+    # the current commit, they are updated to match the newly pushed tip
+    # of the branch. This hook is to be used to override the default
+    # behaviour; however the code below reimplements the default behaviour
+    # as a starting point for convenient modification.
+    #
+    # The hook receives the commit with which the tip of the current
+    # branch is going to be updated:
+    commit=$1
+    
+    # It can exit with a non-zero status to refuse the push (when it does
+    # so, it must not modify the index or the working tree).
+    die () {
+    	echo >&2 "$*"
+    	exit 1
+    }
+    
+    # Or it can make any necessary changes to the working tree and to the
+    # index to bring them to the desired state when the tip of the current
+    # branch is updated to the new commit, and exit with a zero status.
+    #
+    # For example, the hook can simply run git read-tree -u -m HEAD "$1"
+    # in order to emulate git fetch that is run in the reverse direction
+    # with git push, as the two-tree form of git read-tree -u -m is
+    # essentially the same as git switch or git checkout that switches
+    # branches while keeping the local changes in the working tree that do
+    # not interfere with the difference between the branches.
+    
+    # The below is a more-or-less exact translation to shell of the C code
+    # for the default behaviour for git's push-to-checkout hook defined in
+    # the push_to_deploy() function in builtin/receive-pack.c.
+    #
+    # Note that the hook will be executed from the repository directory,
+    # not from the working tree, so if you want to perform operations on
+    # the working tree, you will have to adapt your code accordingly, e.g.
+    # by adding "cd .." or using relative paths.
+    
+    if ! git update-index -q --ignore-submodules --refresh
+    then
+    	die "Up-to-date check failed"
+    fi
+    
+    if ! git diff-files --quiet --ignore-submodules --
+    then
+    	die "Working directory has unstaged changes"
+    fi
+    
+    # This is a rough translation of:
+    #
+    #   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
+    if git cat-file -e HEAD 2>/dev/null
+    then
+    	head=HEAD
+    else
+    	head=$(git hash-object -t tree --stdin </dev/null)
+    fi
+    
+    if ! git diff-index --quiet --cached --ignore-submodules $head --
+    then
+    	die "Working directory has staged changes"
+    fi
+    
+    if ! git read-tree -u -m "$commit"
+    then
+    	die "Could not update working tree to new HEAD"
+    fi
+  │   │   ├── sendemail-validate.sample
+    #!/bin/sh
+    
+    # An example hook script to validate a patch (and/or patch series) before
+    # sending it via email.
+    #
+    # The hook should exit with non-zero status after issuing an appropriate
+    # message if it wants to prevent the email(s) from being sent.
+    #
+    # To enable this hook, rename this file to "sendemail-validate".
+    #
+    # By default, it will only check that the patch(es) can be applied on top of
+    # the default upstream branch without conflicts in a secondary worktree. After
+    # validation (successful or not) of the last patch of a series, the worktree
+    # will be deleted.
+    #
+    # The following config variables can be set to change the default remote and
+    # remote ref that are used to apply the patches against:
+    #
+    #   sendemail.validateRemote (default: origin)
+    #   sendemail.validateRemoteRef (default: HEAD)
+    #
+    # Replace the TODO placeholders with appropriate checks according to your
+    # needs.
+    
+    validate_cover_letter () {
+    	file="$1"
+    	# TODO: Replace with appropriate checks (e.g. spell checking).
+    	true
+    }
+    
+    validate_patch () {
+    	file="$1"
+    	# Ensure that the patch applies without conflicts.
+    	git am -3 "$file" || return
+    	# TODO: Replace with appropriate checks for this patch
+    	# (e.g. checkpatch.pl).
+    	true
+    }
+    
+    validate_series () {
+    	# TODO: Replace with appropriate checks for the whole series
+    	# (e.g. quick build, coding style checks, etc.).
+    	true
+    }
+    
+    # main -------------------------------------------------------------------------
+    
+    if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
+    then
+    	remote=$(git config --default origin --get sendemail.validateRemote) &&
+    	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
+    	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
+    	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
+    	git config --replace-all sendemail.validateWorktree "$worktree"
+    else
+    	worktree=$(git config --get sendemail.validateWorktree)
+    fi || {
+    	echo "sendemail-validate: error: failed to prepare worktree" >&2
+    	exit 1
+    }
+    
+    unset GIT_DIR GIT_WORK_TREE
+    cd "$worktree" &&
+    
+    if grep -q "^diff --git " "$1"
+    then
+    	validate_patch "$1"
+    else
+    	validate_cover_letter "$1"
+    fi &&
+    
+    if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
+    then
+    	git config --unset-all sendemail.validateWorktree &&
+    	trap 'git worktree remove -ff "$worktree"' EXIT &&
+    	validate_series
+    fi
+  │   │   └── update.sample
+    #!/bin/sh
+    #
+    # An example hook script to block unannotated tags from entering.
+    # Called by "git receive-pack" with arguments: refname sha1-old sha1-new
+    #
+    # To enable this hook, rename this file to "update".
+    #
+    # Config
+    # ------
+    # hooks.allowunannotated
+    #   This boolean sets whether unannotated tags will be allowed into the
+    #   repository.  By default they won't be.
+    # hooks.allowdeletetag
+    #   This boolean sets whether deleting tags will be allowed in the
+    #   repository.  By default they won't be.
+    # hooks.allowmodifytag
+    #   This boolean sets whether a tag may be modified after creation. By default
+    #   it won't be.
+    # hooks.allowdeletebranch
+    #   This boolean sets whether deleting branches will be allowed in the
+    #   repository.  By default they won't be.
+    # hooks.denycreatebranch
+    #   This boolean sets whether remotely creating branches will be denied
+    #   in the repository.  By default this is allowed.
+    #
+    
+    # --- Command line
+    refname="$1"
+    oldrev="$2"
+    newrev="$3"
+    
+    # --- Safety check
+    if [ -z "$GIT_DIR" ]; then
+    	echo "Don't run this script from the command line." >&2
+    	echo " (if you want, you could supply GIT_DIR then run" >&2
+    	echo "  $0 <ref> <oldrev> <newrev>)" >&2
+    	exit 1
+    fi
+    
+    if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
+    	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
+    	exit 1
+    fi
+    
+    # --- Config
+    allowunannotated=$(git config --type=bool hooks.allowunannotated)
+    allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
+    denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
+    allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
+    allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
+    
+    # check for no description
+    projectdesc=$(sed -e '1q' "$GIT_DIR/description")
+    case "$projectdesc" in
+    "Unnamed repository"* | "")
+    	echo "*** Project description file hasn't been set" >&2
+    	exit 1
+    	;;
+    esac
+    
+    # --- Check types
+    # if $newrev is 0000...0000, it's a commit to delete a ref.
+    zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+    if [ "$newrev" = "$zero" ]; then
+    	newrev_type=delete
+    else
+    	newrev_type=$(git cat-file -t $newrev)
+    fi
+    
+    case "$refname","$newrev_type" in
+    	refs/tags/*,commit)
+    		# un-annotated tag
+    		short_refname=${refname##refs/tags/}
+    		if [ "$allowunannotated" != "true" ]; then
+    			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
+    			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
+    			exit 1
+    		fi
+    		;;
+    	refs/tags/*,delete)
+    		# delete tag
+    		if [ "$allowdeletetag" != "true" ]; then
+    			echo "*** Deleting a tag is not allowed in this repository" >&2
+    			exit 1
+    		fi
+    		;;
+    	refs/tags/*,tag)
+    		# annotated tag
+    		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
+    		then
+    			echo "*** Tag '$refname' already exists." >&2
+    			echo "*** Modifying a tag is not allowed in this repository." >&2
+    			exit 1
+    		fi
+    		;;
+    	refs/heads/*,commit)
+    		# branch
+    		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
+    			echo "*** Creating a branch is not allowed in this repository" >&2
+    			exit 1
+    		fi
+    		;;
+    	refs/heads/*,delete)
+    		# delete branch
+    		if [ "$allowdeletebranch" != "true" ]; then
+    			echo "*** Deleting a branch is not allowed in this repository" >&2
+    			exit 1
+    		fi
+    		;;
+    	refs/remotes/*,commit)
+    		# tracking branch
+    		;;
+    	refs/remotes/*,delete)
+    		# delete tracking branch
+    		if [ "$allowdeletebranch" != "true" ]; then
+    			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
+    			exit 1
+    		fi
+    		;;
+    	*)
+    		# Anything else (is there anything else?)
+    		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
+    		exit 1
+    		;;
+    esac
+    
+    # --- Finished
+    exit 0
+  │   ├── index
+    [Error: 'utf-8' codec can't decode byte 0xdb in position 23: invalid continuation byte]
+  │   ├── info
+  │   │   └── exclude
+    # git ls-files --others --exclude-from=.git/info/exclude
+    # Lines that start with '#' are comments.
+    # For a project mostly in C, the following would be a good set of
+    # exclude patterns (uncomment them if you want to use them):
+    # *.[oa]
+    # *~
+  │   ├── logs
+  │   │   ├── HEAD
+    0000000000000000000000000000000000000000 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406912 +0330	commit (initial): first commit
+    41cf2748d9abf533a9fc436c7426ee28717c15e5 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791406915 +0330	Branch: renamed refs/heads/master to refs/heads/main
+    0000000000000000000000000000000000000000 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406915 +0330	Branch: renamed refs/heads/master to refs/heads/main
+    41cf2748d9abf533a9fc436c7426ee28717c15e5 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407206 +0330	commit: first commit
+    12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791407644 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407644 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 30b9ac67f04c381bda90694dc403b6361c79d818 muvixo <godarshia20@gmail.com> 1791407646 +0330	commit: first commit
+    30b9ac67f04c381bda90694dc403b6361c79d818 b1e703f8069bf2f95bf84b7966db81d5fb5ef16a muvixo <godarshia20@gmail.com> 1791407802 +0330	commit: first commit
+    b1e703f8069bf2f95bf84b7966db81d5fb5ef16a 6374af337c6660959397208097ded389a7ce1015 muvixo <godarshia20@gmail.com> 1791407883 +0330	commit: first commit
+    6374af337c6660959397208097ded389a7ce1015 0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c muvixo <godarshia20@gmail.com> 1791408017 +0330	commit: first commit
+    0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c 9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa muvixo <godarshia20@gmail.com> 1791408273 +0330	commit: first commit
+    9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa 766322c8dc1ccaa56c360c9845d29bf115664277 muvixo <godarshia20@gmail.com> 1791408380 +0330	commit: sik
+    766322c8dc1ccaa56c360c9845d29bf115664277 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409076 +0330	commit: first commit
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791409081 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409081 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 0000000000000000000000000000000000000000 muvixo <godarshia20@gmail.com> 1791409151 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409151 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 946319b8b6fa60ad2302f30c7d866b26f36af526 muvixo <godarshia20@gmail.com> 1791409228 +0330	commit: first commit
+    946319b8b6fa60ad2302f30c7d866b26f36af526 2f65a98cf5a366440478534dc3b2667a82246377 muvixo <godarshia20@gmail.com> 1791409336 +0330	commit: first commit
+    2f65a98cf5a366440478534dc3b2667a82246377 f484e01703fe2a04e6722b403905e18f479c1e3f muvixo <godarshia20@gmail.com> 1791409480 +0330	commit: first commit
+    f484e01703fe2a04e6722b403905e18f479c1e3f 88e7f23060916ca1201d14bb2d76487866748044 muvixo <godarshia20@gmail.com> 1791409634 +0330	commit: first commit
+  │   │   └── refs
+  │   │       ├── heads
+  │   │       │   └── main
+    0000000000000000000000000000000000000000 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406912 +0330	commit (initial): first commit
+    41cf2748d9abf533a9fc436c7426ee28717c15e5 41cf2748d9abf533a9fc436c7426ee28717c15e5 muvixo <godarshia20@gmail.com> 1791406915 +0330	Branch: renamed refs/heads/master to refs/heads/main
+    41cf2748d9abf533a9fc436c7426ee28717c15e5 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407206 +0330	commit: first commit
+    12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 muvixo <godarshia20@gmail.com> 1791407644 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    12e2cb66331fdeed7e9cbd3d2ef51763fe633d44 30b9ac67f04c381bda90694dc403b6361c79d818 muvixo <godarshia20@gmail.com> 1791407646 +0330	commit: first commit
+    30b9ac67f04c381bda90694dc403b6361c79d818 b1e703f8069bf2f95bf84b7966db81d5fb5ef16a muvixo <godarshia20@gmail.com> 1791407802 +0330	commit: first commit
+    b1e703f8069bf2f95bf84b7966db81d5fb5ef16a 6374af337c6660959397208097ded389a7ce1015 muvixo <godarshia20@gmail.com> 1791407883 +0330	commit: first commit
+    6374af337c6660959397208097ded389a7ce1015 0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c muvixo <godarshia20@gmail.com> 1791408017 +0330	commit: first commit
+    0dcec70fcf4a862f3ab0e7cb21c954c2f749ea3c 9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa muvixo <godarshia20@gmail.com> 1791408273 +0330	commit: first commit
+    9e50b40c9e0ba934c57f985d02c8beaa7e40a8fa 766322c8dc1ccaa56c360c9845d29bf115664277 muvixo <godarshia20@gmail.com> 1791408380 +0330	commit: sik
+    766322c8dc1ccaa56c360c9845d29bf115664277 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409076 +0330	commit: first commit
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409081 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409151 +0330	Branch: renamed refs/heads/main to refs/heads/main
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 946319b8b6fa60ad2302f30c7d866b26f36af526 muvixo <godarshia20@gmail.com> 1791409228 +0330	commit: first commit
+    946319b8b6fa60ad2302f30c7d866b26f36af526 2f65a98cf5a366440478534dc3b2667a82246377 muvixo <godarshia20@gmail.com> 1791409336 +0330	commit: first commit
+    2f65a98cf5a366440478534dc3b2667a82246377 f484e01703fe2a04e6722b403905e18f479c1e3f muvixo <godarshia20@gmail.com> 1791409480 +0330	commit: first commit
+    f484e01703fe2a04e6722b403905e18f479c1e3f 88e7f23060916ca1201d14bb2d76487866748044 muvixo <godarshia20@gmail.com> 1791409634 +0330	commit: first commit
+  │   │       └── remotes
+  │   │           └── origin
+  │   │               └── main
+    0000000000000000000000000000000000000000 9fe1ebc182a9a6e9464d697b40efad2ecc328e64 muvixo <godarshia20@gmail.com> 1791409173 +0330	update by push
+    9fe1ebc182a9a6e9464d697b40efad2ecc328e64 946319b8b6fa60ad2302f30c7d866b26f36af526 muvixo <godarshia20@gmail.com> 1791409241 +0330	update by push
+    946319b8b6fa60ad2302f30c7d866b26f36af526 2f65a98cf5a366440478534dc3b2667a82246377 muvixo <godarshia20@gmail.com> 1791409346 +0330	update by push
+    2f65a98cf5a366440478534dc3b2667a82246377 f484e01703fe2a04e6722b403905e18f479c1e3f muvixo <godarshia20@gmail.com> 1791409497 +0330	update by push
+    f484e01703fe2a04e6722b403905e18f479c1e3f 88e7f23060916ca1201d14bb2d76487866748044 muvixo <godarshia20@gmail.com> 1791409654 +0330	update by push
+  │   ├── objects
+  │   │   ├── 01
+  │   │   │   └── c7ae2bf0565dfbc2d5ee1d4f668d8d95c6b7d4
+    [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+  │   │   ├── 08
+  │   │   │   ├── 2f21ea859d6a19e39af77eab45e754d0f5e0d2
+    [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+  │   │   │   └── c9957ffde13bc016b6c21952d979bdb10dc7bb
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 0a
+  │   │   │   └── 9782834dae8d3c4555cd8bfae92d2f4a354098
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 0b
+  │   │   │   └── 1595012359c750916780b4ea9c5d8f14984e6d
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 0c
+  │   │   │   └── b036b591c8ed787ebc9bd7adc79098ea3b57ed
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 0d
+  │   │   │   └── cec70fcf4a862f3ab0e7cb21c954c2f749ea3c
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 0f
+  │   │   │   └── f7a739452601f8bae19257600f85ab6b3729fd
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 11
+  │   │   │   ├── 6892ecc00f42600d98926ebdecce08fb3e7ca3
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   └── 80de4042791c087b5e28e8f7ba12fa4f7678d3
+    [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+  │   │   ├── 12
+  │   │   │   ├── 05bf78b9d34cb785af5a4fd00aa487ef67788d
+    [Error: 'utf-8' codec can't decode byte 0xb1 in position 4: invalid start byte]
+  │   │   │   ├── dae817a30d1f8002f6347d6980f68a8ac10773
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   └── e2cb66331fdeed7e9cbd3d2ef51763fe633d44
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 15
+  │   │   │   └── 30c14bfba1581679a2705e3f2b305b12e762cb
+    [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+  │   │   ├── 16
+  │   │   │   └── 09a22badcd1d0b7da99822fce2096820587bb6
+    [Error: 'utf-8' codec can't decode byte 0xb4 in position 8: invalid start byte]
+  │   │   ├── 17
+  │   │   │   ├── 40a257d70ecb11603d42b8eabc604271e40123
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   └── e03aa5bab41d97f14d5a389182ad08e1a47641
+    [Error: 'utf-8' codec can't decode byte 0xed in position 2: invalid continuation byte]
+  │   │   ├── 18
+  │   │   │   └── bab38a9aa3e56756e207b2d04488adc803de83
+    [Error: 'utf-8' codec can't decode byte 0xb6 in position 8: invalid start byte]
+  │   │   ├── 1a
+  │   │   │   └── 59c8876a78421b1f6a399f796ffe9cfc893ac7
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 1e
+  │   │   │   └── 58b4ee381283158a40a4269284e5ee1f56f5e7
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 20
+  │   │   │   └── 55665ee370e44501d384a41a23382ca78c7e84
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 24
+  │   │   │   └── 9b3eae3bb8015e027e508c782d8dbd0091c468
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 25
+  │   │   │   └── 626a1451cb44957a545d16ff02e8ea3e958653
+    [Error: 'utf-8' codec can't decode byte 0xa5 in position 2: invalid start byte]
+  │   │   ├── 28
+  │   │   │   └── 1b232b2faf444f8bf4960aba36f7957e8509a0
+    [Error: 'utf-8' codec can't decode byte 0xdd in position 2: invalid continuation byte]
+  │   │   ├── 29
+  │   │   │   └── 1221a3f8f66fed8868c392637f259130950a4c
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 2e
+  │   │   │   └── 5f2e7f828d18c8e60d30562cdbf5716acb51fe
+    [Error: 'utf-8' codec can't decode byte 0xb4 in position 8: invalid start byte]
+  │   │   ├── 2f
+  │   │   │   ├── 3c7a0ea2e06c785c98e8ddd39877d47e715780
+    [Error: 'utf-8' codec can't decode byte 0xb1 in position 9: invalid start byte]
+  │   │   │   └── 65a98cf5a366440478534dc3b2667a82246377
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 30
+  │   │   │   └── b9ac67f04c381bda90694dc403b6361c79d818
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 34
+  │   │   │   ├── 485b7fb3357347790fd2ca1a93a9fc5be444c7
+    [Error: 'utf-8' codec can't decode byte 0xae in position 20: invalid start byte]
+  │   │   │   ├── 8302d84d375b6eb085fc989362ac8c4f4e70e7
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   └── eee24294257e87f14dc3afea9afe9d33f5ae98
+    [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+  │   │   ├── 36
+  │   │   │   └── 44eb8ce87f61d77076c6acb8e2f5922ce780a1
+    [Error: 'utf-8' codec can't decode byte 0xe5 in position 2: invalid continuation byte]
+  │   │   ├── 3b
+  │   │   │   └── 52472bf956df26b365bfad1e1ed63714469c9e
+    [Error: 'utf-8' codec can't decode byte 0x92 in position 3: invalid start byte]
+  │   │   ├── 3e
+  │   │   │   ├── 0a06fec0209d6fa27beb6cbfc97fd85d5bd6fc
+    [Error: 'utf-8' codec can't decode byte 0xbd in position 16: invalid start byte]
+  │   │   │   └── 6cb489f4c179ac6f37acf715b93c92229b5ae4
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 3f
+  │   │   │   └── 6afbfd2869c3c2cd0f50f8a51d576a91c4183c
+    [Error: 'utf-8' codec can't decode byte 0xf0 in position 18: invalid continuation byte]
+  │   │   ├── 41
+  │   │   │   ├── 34e47069c12ef2cc8f16079f424a0fac7d09f9
+    [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+  │   │   │   ├── ccb3176212e60cd0fe37a0d84da122a5c29324
+    [Error: 'utf-8' codec can't decode byte 0xdb in position 6: invalid continuation byte]
+  │   │   │   └── cf2748d9abf533a9fc436c7426ee28717c15e5
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 43
+  │   │   │   └── 73b17b96d2f3b0181b5e81927d16cfbdba151e
+    [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+  │   │   ├── 44
+  │   │   │   └── 63db4303ac73c57066bf26f0d3365c89544d35
+    [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+  │   │   ├── 46
+  │   │   │   └── 87f10d44318a20e255edb8b3e0307ea0736e8e
+    [Error: 'utf-8' codec can't decode byte 0xca in position 3: invalid continuation byte]
+  │   │   ├── 47
+  │   │   │   └── 9bae082f72e464ba14dbfdc317cf25a3bf26d7
+    [Error: 'utf-8' codec can't decode byte 0xb5 in position 2: invalid start byte]
+  │   │   ├── 4a
+  │   │   │   ├── 0e3ca5f1ce01afe39c03c747a73f8fbb3bf8db
+    [Error: 'utf-8' codec can't decode byte 0xb1 in position 9: invalid start byte]
+  │   │   │   └── b9e7c21ae2f7615fcb055ae93cbedc07ce1623
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 51
+  │   │   │   └── 7a8d82dcd757af920c414b631730a5e17d2f67
+    [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+  │   │   ├── 57
+  │   │   │   └── 7e060dbbe9bfbc9e3d24960c7a52a2a830d149
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 58
+  │   │   │   └── 1cd5e0e1c962dd13b8b4e3433470b35528f0e6
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 59
+  │   │   │   └── 548674df9ede0d41483623c79177feeaea793a
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 5a
+  │   │   │   └── cae57087b36bd46f9d67f048577fcee1f222d7
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 5c
+  │   │   │   └── 596f38beddc553505f335e6466a37bd4117533
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 5d
+  │   │   │   └── 32720a833b54a14eea508e9e2468e76e193a65
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 60
+  │   │   │   ├── 360b3361400f8bddfed5f38c98396c4cf6211c
+    [Error: 'utf-8' codec can't decode byte 0xb6 in position 8: invalid start byte]
+  │   │   │   └── 477e205f08a6385b01983dde8d40838713fa01
+    [Error: 'utf-8' codec can't decode byte 0xb1 in position 8: invalid start byte]
+  │   │   ├── 63
+  │   │   │   └── 74af337c6660959397208097ded389a7ce1015
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 66
+  │   │   │   ├── 3911bc8c7406ac8e27fa09fd7dcf7bbc90a1c3
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   ├── 592dc90efd193076c735200eeab082985e94ae
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   └── e587fb06df628ceef490c6ac4c86772a29b663
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 68
+  │   │   │   ├── 94464020959dbde52463f087eb0a048deea012
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   │   └── a9d8a7904ea2c7092ecefeb887b576bb831336
+    [Error: 'utf-8' codec can't decode byte 0xb0 in position 9: invalid start byte]
+  │   │   ├── 69
+  │   │   │   └── 0b46e3a591a91b213e552f6653d039a9e8c42c
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 6b
+  │   │   │   ├── 30fe55cc120ce39d0b5e6883a0e56c637f2b3b
+    [Error: 'utf-8' codec can't decode byte 0xa5 in position 2: invalid start byte]
+  │   │   │   └── d77ec9530c27dd890cfd574b2967ab62c980ab
+    [Error: 'utf-8' codec can't decode byte 0xbd in position 2: invalid start byte]
+  │   │   ├── 6d
+  │   │   │   └── 3a9e8cd4581a33e49f323f09b730d81d0fc641
+    [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+  │   │   ├── 6e
+  │   │   │   └── 3cd8bd3492cb55d23d40b72f3562d59a441356
+    [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+  │   │   ├── 6f
+  │   │   │   └── b65144eb28772a0f19bd478fe31345d2f32481
+    [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+  │   │   ├── 72
+  │   │   │   ├── 4794ccc211a5dc4234ef4c7e8a58dd40a37b93
+    [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+  │   │   │   └── ad4720c820434cd673b07d70b105f1e2c35cac
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 76
+  │   │   │   ├── 6322c8dc1ccaa56c360c9845d29bf115664277
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   │   └── de8f0ae4f8066f61e88a27970dc4b27d6de9dc
+    [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+  │   │   ├── 78
+  │   │   │   └── fffe6836c91f484ba0a79952fcfb959f983170
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 7c
+  │   │   │   └── ef7a569150611c9415b869e4624591630e0746
+    [Error: 'utf-8' codec can't decode byte 0xbd in position 2: invalid start byte]
+  │   │   ├── 7f
+  │   │   │   ├── 95bef2db4f22fc251c8f81429af55f3e4d89e6
+    [Error: 'utf-8' codec can't decode byte 0x8f in position 3: invalid start byte]
+  │   │   │   └── eb6b1c414d5fcbbe579a0ef2e72eba826d23fa
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 2: invalid start byte]
+  │   │   ├── 80
+  │   │   │   └── 28fe84c6eec6cdbc1c5ac1750a7aa6bb65745d
+    [Error: 'utf-8' codec can't decode byte 0xcb in position 4: invalid continuation byte]
+  │   │   ├── 82
+  │   │   │   └── 8b8ec8c81b0b71dc8643cb0d9ba29ec2ed2670
+    [Error: 'utf-8' codec can't decode byte 0xae in position 19: invalid start byte]
+  │   │   ├── 83
+  │   │   │   ├── 58ce6304ef00e72838801eb21851467aab2097
+    [Error: 'utf-8' codec can't decode byte 0xc8 in position 3: invalid continuation byte]
+  │   │   │   └── c0fc89b663f7cea47641412e3db41d0278a43a
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 84
+  │   │   │   └── 874e9c2100516f923c61a75350fbc58507c413
+    [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+  │   │   ├── 88
+  │   │   │   └── e7f23060916ca1201d14bb2d76487866748044
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 8a
+  │   │   │   ├── 39863da72ed1c87c4305c2adba4a7abffa872d
+    [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+  │   │   │   ├── 3c7b4b110ef44e2787f472919ec67311482083
+    [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+  │   │   │   └── dee07e706a16aa2bf3a88a084e8f9273860e6e
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 8c
+  │   │   │   └── 369f2eeea76c3d7f645e23d197e2141cfdbc8d
+    [Error: 'utf-8' codec can't decode byte 0xdb in position 4: invalid continuation byte]
+  │   │   ├── 8e
+  │   │   │   └── 6ea455047f108dee9f0a381bb191d9882b4f98
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 90
+  │   │   │   └── bf1edb4fdf91098c1dcc536b37b9195c48453e
+    [Error: 'utf-8' codec can't decode byte 0xad in position 2: invalid start byte]
+  │   │   ├── 93
+  │   │   │   └── a0171f889450ef64b95b70f996de73e3b37897
+    [Error: 'utf-8' codec can't decode byte 0x91 in position 3: invalid start byte]
+  │   │   ├── 94
+  │   │   │   ├── 6319b8b6fa60ad2302f30c7d866b26f36af526
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   │   └── 9729cec4849be60637c6c3ed2038976afab4c4
+    [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+  │   │   ├── 96
+  │   │   │   ├── 61d8f19782ac1308d3d4a46517e32d372ee06f
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   │   └── d4042b868557743eb4aa2a63311e52789328d0
+    [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+  │   │   ├── 97
+  │   │   │   └── acf392f9756c5c10fbf89b8fc514db57bcc58e
+    [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+  │   │   ├── 99
+  │   │   │   └── 9d47bc4d839dff39046f9906071a50449f2550
+    [Error: 'utf-8' codec can't decode byte 0xcb in position 3: invalid continuation byte]
+  │   │   ├── 9a
+  │   │   │   └── 5cef71693abb46c24615e3ee6bc788b2adb7bf
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── 9b
+  │   │   │   ├── 2d54ee1912687416f034c608b6db47257e931a
+    [Error: 'utf-8' codec can't decode byte 0xb6 in position 8: invalid start byte]
+  │   │   │   └── 4d45d6d8c22697fd050a8e268958dab2a53ac3
+    [Error: 'utf-8' codec can't decode byte 0xb0 in position 9: invalid start byte]
+  │   │   ├── 9d
+  │   │   │   └── eb28f8286b5049a2c1b1e8515bcf64e39c6b59
+    [Error: 'utf-8' codec can't decode byte 0xb7 in position 8: invalid start byte]
+  │   │   ├── 9e
+  │   │   │   └── 50b40c9e0ba934c57f985d02c8beaa7e40a8fa
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── 9f
+  │   │   │   └── e1ebc182a9a6e9464d697b40efad2ecc328e64
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── a0
+  │   │   │   └── 6505795c1db61c473ebfbe060fab979bba0bf6
+    [Error: 'utf-8' codec can't decode byte 0xb5 in position 2: invalid start byte]
+  │   │   ├── a3
+  │   │   │   └── 405b0617f5eb98578f0647d756cc20ab8702f3
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── a5
+  │   │   │   └── 0e2f2b65036a99f52a4678ddd38a210a0de7c8
+    [Error: 'utf-8' codec can't decode byte 0xdb in position 6: invalid continuation byte]
+  │   │   ├── a7
+  │   │   │   └── 2afd95306982c1e72572909f1ed593bfebabd5
+    [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+  │   │   ├── a9
+  │   │   │   ├── 0607ac156ee9c2520f1c43c741a218e9b77743
+    [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+  │   │   │   └── 11708d560f7ef98ba572cdfc72b71f98a65b57
+    [Error: 'utf-8' codec can't decode byte 0xdb in position 6: invalid continuation byte]
+  │   │   ├── ac
+  │   │   │   └── 1a708ce881d467bcab30d0714a3644dc2baea2
+    [Error: 'utf-8' codec can't decode byte 0x9d in position 2: invalid start byte]
+  │   │   ├── ad
+  │   │   │   └── 38f046c3f273e5dfbd9162081ef2f81ecc1300
+    [Error: 'utf-8' codec can't decode byte 0x8d in position 2: invalid start byte]
+  │   │   ├── ae
+  │   │   │   └── bc2bf568819c601f8387dd4efd6da5e33e270a
+    [Error: 'utf-8' codec can't decode byte 0xcd in position 19: invalid continuation byte]
+  │   │   ├── b1
+  │   │   │   └── e703f8069bf2f95bf84b7966db81d5fb5ef16a
+    [Error: 'utf-8' codec can't decode byte 0x95 in position 2: invalid start byte]
+  │   │   ├── b3
+  │   │   │   └── 66e36ecf6871bbbc90c9e61f727cde8d59fdfa
+    [Error: 'utf-8' codec can't decode byte 0xb6 in position 9: invalid start byte]
+  │   │   ├── b6
+  │   │   │   └── 7e1a16de03672f0b3079f03dd0bb14c9bd5e43
+    [Error: 'utf-8' codec can't decode byte 0xca in position 3: invalid continuation byte]
+  │   │   ├── b7
+  │   │   │   └── 7ca4ab13e2a204388a614672bc5a87d5db80c0
+    [Error: 'utf-8' codec can't decode byte 0xd3 in position 6: invalid continuation byte]
+  │   │   ├── bb
+  │   │   │   └── 4fd82e8e829c5a80399434b6ec55ab082e3325
+    [Error: 'utf-8' codec can't decode byte 0x85 in position 14: invalid start byte]
+  │   │   ├── bd
+  │   │   │   ├── 56cb1947d98adb14995033345f9680fe1e0dec
+├── gradle.properties
+  org.gradle.jvmargs=-Xmx3G
+  mod_version=1.0.0
+  mod_group=com.example.asyncmenus
+  mod_name=AsyncMenus
+└── src
+    └── main
+        ├── java
+        │   └── com
+        │       ├── example
+        │       │   └── asyncmenus
+        │       │       ├── AsyncMenus.java
+  package com.example.asyncmenus;
+  
+  import net.minecraftforge.common.MinecraftForge;
+  import net.minecraftforge.fml.common.Mod;
+  import net.minecraftforge.fml.common.event.FMLInitializationEvent;
+  
+  @Mod(modid = AsyncMenus.MODID, name = AsyncMenus.NAME, version = AsyncMenus.VERSION,
+          clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]", useMetadata = true)
+  public class AsyncMenus {
+      public static final String MODID = "asyncmenus";
+      public static final String NAME = "Async Menus";
+      public static final String VERSION = "1.0.0";
+  
+      @Mod.EventHandler
+      public void init(FMLInitializationEvent event) {
+          MinecraftForge.EVENT_BUS.register(new ResourcePackScreenHandler());
+          MinecraftForge.EVENT_BUS.register(new ShaderPackPrefetcher());
+      }
+  }
+        │       │       ├── AsyncPackSession.java
+  package com.example.asyncmenus;
+  
+  import java.io.File;
+  import java.io.FileFilter;
+  import java.util.*;
+  import java.util.concurrent.*;
+  import java.util.concurrent.atomic.AtomicInteger;
+  
+  import com.google.common.collect.Lists;
+  import net.minecraft.client.Minecraft;
+  import net.minecraft.client.gui.*;
+  import net.minecraft.client.resources.*;
+  import net.minecraft.client.resources.I18n;
+  import org.apache.logging.log4j.LogManager;
+  import org.apache.logging.log4j.Logger;
+  
+  /** One open Resource Packs screen: owns the lists and the background loader. */
+  final class AsyncPackSession {
+      private static final Logger LOG = LogManager.getLogger(AsyncMenus.MODID);
+      private static final long DRAIN_BUDGET_NANOS = 3_000_000L; // max ~3 ms of UI work per frame
+  
+      private static final FileFilter PACK_FILTER = f ->
+              (f.isFile() && f.getName().endsWith(".zip"))
+                      || (f.isDirectory() && new File(f, "pack.mcmeta").isFile());
+  
+      private static final class Loaded {
+          final ResourcePackRepository.Entry entry;
+          final String name;
+          Loaded(ResourcePackRepository.Entry entry, String name) { this.entry = entry; this.name = name; }
+      }
+  
+      final GuiScreenResourcePacks screen;
+      private final Minecraft mc = Minecraft.getMinecraft();
+      private final List<ResourcePackListEntry> available = Lists.newArrayList();
+      private final List<ResourcePackListEntry> selected = Lists.newArrayList();
+      private final Map<ResourcePackListEntry, String> sortKeys = new HashMap<ResourcePackListEntry, String>();
+      private final Queue<Loaded> ready = new ConcurrentLinkedQueue<Loaded>();
+      private final AtomicInteger total = new AtomicInteger();
+      private final AtomicInteger finished = new AtomicInteger();
+      private volatile boolean scanDone;
+      private volatile boolean cancelled;
+      private ExecutorService pool;
+      private boolean started;
+  
+      AsyncPackSession(GuiScreenResourcePacks screen) {
+          this.screen = screen;
+      }
+  
+      /** Called on every initGui (also on window resize). Lists persist; only the widgets are rebuilt. */
+      void buildGui(List<GuiButton> buttons) throws Exception {
+          if (!started) populateSelected();
+  
+          int w = screen.width, h = screen.height;
+          GuiResourcePackAvailable left = new GuiResourcePackAvailable(mc, 200, h, available);
+          left.setSlotXBoundsFromLeft(w / 2 - 4 - 200);
+          left.registerScrollButtons(7, 8);
+          GuiResourcePackSelected right = new GuiResourcePackSelected(mc, 200, h, selected);
+          right.setSlotXBoundsFromLeft(w / 2 + 4);
+          right.registerScrollButtons(7, 8);
+  
+          PackScreenReflection.inject(screen, available, selected, left, right);
+  
+          // Buttons last: if anything above throws, vanilla init can still run cleanly.
+          buttons.add(new GuiOptionButton(2, w / 2 - 154, h - 48, I18n.format("resourcePack.openFolder")));
+          buttons.add(new GuiOptionButton(1, w / 2 + 4, h - 48, I18n.format("gui.done")));
+  
+          if (!started) {
+              started = true;
+              startLoading();
+          }
+      }
+  
+      private void populateSelected() {
+          ResourcePackRepository repo = mc.getResourcePackRepository();
+          for (ResourcePackRepository.Entry e : Lists.reverse(repo.getRepositoryEntries())) {
+              ResourcePackListEntryFound f = new ResourcePackListEntryFound(screen, e);
+              selected.add(f);
+              sortKeys.put(f, nameOf(e));
+          }
+          selected.add(new ResourcePackListEntryDefault(screen));
+      }
+  
+      private void startLoading() {
+          final ResourcePackRepository repo = mc.getResourcePackRepository();
+          final File dir = repo.getDirResourcepacks();
+  
+          // Reuse packs vanilla already parsed (same name + type + lastModified).
+          final Map<String, ResourcePackRepository.Entry> cache = new HashMap<String, ResourcePackRepository.Entry>();
+          for (ResourcePackRepository.Entry e : repo.getRepositoryEntriesAll()) cache.put(e.toString(), e);
+          final Set<String> selectedKeys = new HashSet<String>();
+          for (ResourcePackRepository.Entry e : repo.getRepositoryEntries()) selectedKeys.add(e.toString());
+  
+          int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+          pool = Executors.newFixedThreadPool(threads, r -> {
+              Thread t = new Thread(r, "AsyncMenus-PackLoader");
+              t.setDaemon(true);
+              return t;
+          });
+  
+          try {
+              pool.submit(() -> {
+                  try {
+                      File[] files = dir.listFiles(PACK_FILTER); // directory scan also happens off-thread
+                      if (files == null) return;
+                      total.addAndGet(files.length);
+                      for (final File file : files) {
+                          if (cancelled) return;
+                          pool.submit(() -> loadOne(repo, file, cache, selectedKeys));
+                      }
+                  } catch (RejectedExecutionException ignored) {
+                  } finally {
+                      scanDone = true;
+                  }
+              });
+          } catch (RejectedExecutionException ignored) {
+              scanDone = true;
+          }
+      }
+  
+      private void loadOne(ResourcePackRepository repo, File file,
+                           Map<String, ResourcePackRepository.Entry> cache, Set<String> selectedKeys) {
+          try {
+              if (cancelled) return;
+              ResourcePackRepository.Entry entry = PackScreenReflection.newEntry(repo, file);
+              ResourcePackRepository.Entry cached = cache.get(entry.toString());
+              if (cached != null) {
+                  entry = cached;
+              } else {
+                  entry.updateResourcePack(); // heavy part: opens zip, reads pack.mcmeta + pack.png
+              }
+              if (cancelled || selectedKeys.contains(entry.toString())) return;
+              ready.add(new Loaded(entry, file.getName()));
+          } catch (Throwable t) {
+              LOG.debug("Skipping unreadable resource pack {}", file, t); // vanilla also skips these
+          } finally {
+              finished.incrementAndGet();
+          }
+      }
+  
+      /** Render thread: move finished packs into the visible list, with a small per-frame time budget. */
+      void drain() {
+          long end = System.nanoTime() + DRAIN_BUDGET_NANOS;
+          Loaded l;
+          while (!cancelled && (l = ready.poll()) != null) {
+              ResourcePackListEntryFound f = new ResourcePackListEntryFound(screen, l.entry);
+              insertSorted(f, l.name);
+              if (System.nanoTime() > end) break;
+          }
+      }
+  
+      private void insertSorted(ResourcePackListEntry e, String key) {
+          sortKeys.put(e, key);
+          int i = 0;
+          while (i < available.size()) {
+              String other = sortKeys.get(available.get(i));
+              if (other != null && key.compareToIgnoreCase(other) < 0) break;
+              i++;
+          }
+          available.add(i, e);
+      }
+  
+      boolean isLoading() {
+          return !cancelled && (!scanDone || finished.get() < total.get() || !ready.isEmpty());
+      }
+  
+      void drawStatus() {
+          if (!isLoading()) return;
+          String msg = String.format("Loading packs... %d/%d", finished.get(), Math.max(total.get(), finished.get()));
+          mc.fontRendererObj.drawStringWithShadow(msg,
+                  (screen.width - mc.fontRendererObj.getStringWidth(msg)) / 2f, screen.height - 20, 0xFFFFFF);
+      }
+  
+      void cancel() {
+          cancelled = true;
+          ready.clear();
+          if (pool != null) pool.shutdownNow();
+      }
+  
+      private static String nameOf(ResourcePackRepository.Entry e) {
+          try {
+              return e.getResourcePackName();
+          } catch (Exception ex) {
+              return e.toString();
+          }
+      }
+  }
+        │       │       ├── PackScreenReflection.java
+  package com.example.asyncmenus;
+  
+  import java.io.File;
+  import java.lang.reflect.Constructor;
+  import java.lang.reflect.Field;
+  import java.util.List;
+  
+  import net.minecraft.client.gui.GuiResourcePackAvailable;
+  import net.minecraft.client.gui.GuiResourcePackSelected;
+  import net.minecraft.client.gui.GuiScreenResourcePacks;
+  import net.minecraft.client.resources.ResourcePackListEntry;
+  import net.minecraft.client.resources.ResourcePackRepository;
+  import net.minecraftforge.fml.relauncher.ReflectionHelper;
+  import org.apache.logging.log4j.LogManager;
+  
+  /** Reflection access to the private members of vanilla's resource pack screen. */
+  final class PackScreenReflection {
+      private static Field availableList, selectedList, availableGui, selectedGui;
+      private static Constructor<ResourcePackRepository.Entry> entryCtor;
+      private static boolean ok;
+  
+      static {
+          try {
+              // Dev (MCP) name first, then SRG name, then fall back to lookup by type/order.
+              availableList = find(List.class, 0, "availableResourcePacks", "field_146966_g");
+              selectedList = find(List.class, 1, "selectedResourcePacks", "field_146969_h");
+              availableGui = find(GuiResourcePackAvailable.class, 0, "availableResourcePacksList", "field_146970_i");
+              selectedGui = find(GuiResourcePackSelected.class, 0, "selectedResourcePacksList", "field_146967_r");
+              entryCtor = ResourcePackRepository.Entry.class
+                      .getDeclaredConstructor(ResourcePackRepository.class, File.class);
+              entryCtor.setAccessible(true);
+              ok = true;
+          } catch (Throwable t) {
+              LogManager.getLogger(AsyncMenus.MODID).error("Reflection setup failed; vanilla screen will be used", t);
+          }
+      }
+  
+      private PackScreenReflection() {}
+  
+      static boolean isAvailable() { return ok; }
+  
+      private static Field find(Class<?> type, int index, String... names) {
+          try {
+              return ReflectionHelper.findField(GuiScreenResourcePacks.class, names);
+          } catch (RuntimeException ex) {
+              int i = 0;
+              for (Field f : GuiScreenResourcePacks.class.getDeclaredFields()) {
+                  if (f.getType() == type && i++ == index) {
+                      f.setAccessible(true);
+                      return f;
+                  }
+              }
+              throw ex;
+          }
+      }
+  
+      static void inject(GuiScreenResourcePacks screen,
+                         List<ResourcePackListEntry> available, List<ResourcePackListEntry> selected,
+                         GuiResourcePackAvailable availableUi, GuiResourcePackSelected selectedUi)
+              throws IllegalAccessException {
+          availableList.set(screen, available);
+          selectedList.set(screen, selected);
+          availableGui.set(screen, availableUi);
+          selectedGui.set(screen, selectedUi);
+      }
+  
+      static ResourcePackRepository.Entry newEntry(ResourcePackRepository repo, File file) throws Exception {
+          return entryCtor.newInstance(repo, file);
+      }
+  }
+        │       │       ├── ResourcePackScreenHandler.java
+  package com.example.asyncmenus;
+  
+  import net.minecraft.client.gui.GuiScreenResourcePacks;
+  import net.minecraftforge.client.event.GuiOpenEvent;
+  import net.minecraftforge.client.event.GuiScreenEvent;
+  import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+  import org.apache.logging.log4j.LogManager;
+  import org.apache.logging.log4j.Logger;
+  
+  public class ResourcePackScreenHandler {
+      private static final Logger LOG = LogManager.getLogger(AsyncMenus.MODID);
+      private AsyncPackSession session;
+  
+      @SubscribeEvent
+      public void onInitPre(GuiScreenEvent.InitGuiEvent.Pre e) {
+          // Exact class match: subclasses from other mods are left untouched.
+          if (e.gui == null || e.gui.getClass() != GuiScreenResourcePacks.class) return;
+          if (!PackScreenReflection.isAvailable()) return;
+  
+          GuiScreenResourcePacks screen = (GuiScreenResourcePacks) e.gui;
+          try {
+              if (session == null || session.screen != screen) {
+                  closeSession();
+                  session = new AsyncPackSession(screen);
+              }
+              session.buildGui(e.buttonList);
+              e.setCanceled(true); // skip vanilla's blocking initGui
+          } catch (Throwable t) {
+              LOG.error("Async resource pack screen failed, falling back to vanilla", t);
+              closeSession(); // event not cancelled -> vanilla initGui runs
+          }
+      }
+  
+      @SubscribeEvent
+      public void onGuiOpen(GuiOpenEvent e) {
+          if (session != null && e.gui != session.screen) closeSession();
+      }
+  
+      @SubscribeEvent
+      public void onDrawPre(GuiScreenEvent.DrawScreenEvent.Pre e) {
+          if (session != null && e.gui == session.screen) session.drain();
+      }
+  
+      @SubscribeEvent
+      public void onDrawPost(GuiScreenEvent.DrawScreenEvent.Post e) {
+          if (session != null && e.gui == session.screen) session.drawStatus();
+      }
+  
+      private void closeSession() {
+          if (session != null) {
+              session.cancel();
+              session = null;
+          }
+      }
+  }
+        │       │       └── ShaderPackPrefetcher.java
+  package com.example.asyncmenus;
+  
+  import java.io.File;
+  import java.util.Enumeration;
+  import java.util.concurrent.atomic.AtomicBoolean;
+  import java.util.zip.ZipEntry;
+  import java.util.zip.ZipFile;
+  
+  import net.minecraft.client.Minecraft;
+  import net.minecraftforge.client.event.GuiOpenEvent;
+  import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+  
+  /**
+   * Warms the OS file cache for the shaderpacks folder in the background when the options screens open.
+   * This does NOT make OptiFine's own shader list async; it only reduces the cost of its later synchronous scan.
+   */
+  public class ShaderPackPrefetcher {
+      private static final String[] OPTIFINE_MARKERS = {"net.optifine.shaders.Shaders", "shadersmod.client.Shaders"};
+  
+      private final boolean optifine = detectOptiFine();
+      private final AtomicBoolean running = new AtomicBoolean();
+      private volatile long lastRun;
+  
+      private boolean detectOptiFine() {
+          for (String name : OPTIFINE_MARKERS) {
+              try {
+                  Class.forName(name, false, getClass().getClassLoader());
+                  return true;
+              } catch (Throwable ignored) {}
+          }
+          return false;
+      }
+  
+      @SubscribeEvent
+      public void onGuiOpen(GuiOpenEvent e) {
+          if (!optifine || e.gui == null) return;
+          String n = e.gui.getClass().getSimpleName();
+          if (!n.equals("GuiOptions") && !n.equals("GuiVideoSettings")) return;
+  
+          long now = System.currentTimeMillis();
+          if (now - lastRun < 30_000L || !running.compareAndSet(false, true)) return;
+          lastRun = now;
+  
+          Thread t = new Thread(this::warm, "AsyncMenus-ShaderPrefetch");
+          t.setDaemon(true);
+          t.start();
+      }
+  
+      private void warm() {
+          try {
+              File[] files = new File(Minecraft.getMinecraft().mcDataDir, "shaderpacks").listFiles();
+              if (files == null) return;
+              for (File f : files) {
+                  if (f.isFile() && f.getName().toLowerCase().endsWith(".zip")) {
+                      try (ZipFile zip = new ZipFile(f)) {
+                          Enumeration<? extends ZipEntry> en = zip.entries(); // reads the central directory
+                          while (en.hasMoreElements()) en.nextElement();
+                      } catch (Exception ignored) {}
+                  } else if (f.isDirectory()) {
+                      new File(f, "shaders").list();
+                  }
+              }
+          } finally {
+              running.set(false);
+          }
+      }
+  }
+        │       └── oryvex
+        │           └── asyncload
+        │               ├── AsyncLoadMod.java
+  package com.oryvex.asyncload;
+  
+  import com.oryvex.asyncload.events.GuiEventHandler;
+  import net.minecraftforge.common.MinecraftForge;
+  import net.minecraftforge.fml.common.Mod;
+  import net.minecraftforge.fml.common.event.FMLInitializationEvent;
+  
+  @Mod(modid = AsyncLoadMod.MODID, version = AsyncLoadMod.VERSION, name = AsyncLoadMod.NAME, acceptedMinecraftVersions = "[1.8.9]")
+  public class AsyncLoadMod {
+      public static final String MODID = "asyncload";
+      public static final String NAME = "Async Menu Load";
+      public static final String VERSION = "1.0.0";
+  
+      @Mod.EventHandler
+      public void init(FMLInitializationEvent event) {
+          MinecraftForge.EVENT_BUS.register(new GuiEventHandler());
+      }
+  }
+        │               ├── events
+        │               │   └── GuiEventHandler.java
+  package com.oryvex.asyncload.events;
+  
+  import com.oryvex.asyncload.gui.AsyncResourcePackGui;
+  import net.minecraft.client.gui.GuiScreenResourcePacks;
+  import net.minecraftforge.client.event.GuiOpenEvent;
+  import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+  
+  public class GuiEventHandler {
+  
+      @SubscribeEvent
+      public void onGuiOpen(GuiOpenEvent event) {
+          if (event.gui instanceof GuiScreenResourcePacks && !(event.gui instanceof AsyncResourcePackGui)) {
+              GuiScreenResourcePacks original = (GuiScreenResourcePacks) event.gui;
+              event.gui = new AsyncResourcePackGui(null);
+          }
+          
+          if (event.gui != null && event.gui.getClass().getName().equals("net.optifine.gui.GuiShaders")) {
+              // Future implementation for Shaders menu
+          }
+      }
+  }
+        │               └── gui
+        │                   └── AsyncResourcePackGui.java
+  package com.oryvex.asyncload.gui;
+  
+  import net.minecraft.client.Minecraft;
+  import net.minecraft.client.gui.GuiScreen;
+  import net.minecraft.client.gui.GuiScreenResourcePacks;
+  import net.minecraft.client.resources.ResourcePackListEntry;
+  import net.minecraft.client.resources.ResourcePackRepository;
+  
+  import java.io.File;
+  import java.util.concurrent.ConcurrentLinkedQueue;
+  
+  public class AsyncResourcePackGui extends GuiScreenResourcePacks {
+  
+      private final ConcurrentLinkedQueue<ResourcePackRepository.Entry> loadedPacksQueue = new ConcurrentLinkedQueue<>();
+      private boolean isLoading = true;
+  
+      public AsyncResourcePackGui(GuiScreen parentScreenIn) {
+          super(parentScreenIn);
+      }
+  
+      @Override
+      public void initGui() {
+          super.initGui();
+          this.availableResourcePacks.clear(); 
+          startAsyncLoading();
+      }
+  
+      private void startAsyncLoading() {
+          Thread loadThread = new Thread(() -> {
+              ResourcePackRepository repo = Minecraft.getMinecraft().getResourcePackRepository();
+              repo.updateRepositoryEntriesAll(); 
+              
+              for (ResourcePackRepository.Entry entry : repo.getRepositoryEntriesAll()) {
+                  entry.updateResourcePack(); 
+                  loadedPacksQueue.add(entry);
+              }
+              isLoading = false;
+          }, "Async-Pack-Loader");
+          
+          loadThread.setDaemon(true);
+          loadThread.start();
+      }
+  
+      @Override
+      public void updateScreen() {
+          super.updateScreen();
+          
+          int packsProcessedThisTick = 0;
+          while (!loadedPacksQueue.isEmpty() && packsProcessedThisTick < 2) { 
+              ResourcePackRepository.Entry entry = loadedPacksQueue.poll();
+              if (entry != null) {
+                  // Implementation to add CustomPackEntry to this.availableResourcePacks goes here
+              }
+              packsProcessedThisTick++;
+          }
+      }
+  
+      @Override
+      public void drawScreen(int mouseX, int mouseY, float partialTicks) {
+          super.drawScreen(mouseX, mouseY, partialTicks);
+          if (isLoading) {
+              this.drawCenteredString(this.fontRendererObj, "Loading Packs Asynchronously...", this.width / 2, 20, 16777215);
+          }
+      }
+  }
+        └── resources
+            └── mcmod.info
+  [
+    {
+      "modid": "asyncmenus",
+      "name": "Async Menus",
+      "description": "Loads the Resource Packs menu asynchronously: the screen opens instantly and packs appear one by one.",
+      "version": "${version}",
+      "mcversion": "${mcversion}",
+      "authorList": ["YourName"],
+      "credits": "",
+      "logoFile": "",
+      "url": "",
+      "updateUrl": "",
+      "parent": "",
+      "screenshots": [],
+      "dependencies": []
+    }
+  ]
