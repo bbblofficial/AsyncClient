@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download Minecraft 1.8.8 + Forge + assets
+      - name: Download Minecraft client + libraries + Forge
         run: |
           mkdir -p dist
           python3 download_mc.py dist/mc-data
@@ -51,9 +51,7 @@ jobs:
           cp "$JAR" dist/mods/OryvexClient.jar
           cp start.bat dist/start.bat
           cp launcher.py dist/launcher.py
-          echo "--- dist size ---"
           du -sh dist
-          du -sh dist/mc-data/*
 
       - name: Create ZIP
         run: |

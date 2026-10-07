@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OryvexClient Fixer v3
-Small ZIP (~30MB): bundles client.jar + libraries + Forge, NO assets.
-Assets are reused from user's .minecraft or downloaded on first run.
+OryvexClient Fixer v4
+Fetches Forge's version.json from installer, downloads extra Forge libraries.
 """
 import shutil
 from pathlib import Path
@@ -11,20 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).parent.resolve()
 
 # ===========================================================================
-# launcher.py — smart asset handling
+# launcher.py — same as v3, no changes needed
 # ===========================================================================
 LAUNCHER_PY = r'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""OryvexClient Launcher (bundled client.jar + Forge, smart assets)."""
-import hashlib
-import json
-import os
-import platform
-import shutil
-import subprocess
-import sys
-import urllib.request
-import zipfile
+"""OryvexClient Launcher."""
+import hashlib, json, os, platform, shutil, subprocess, sys
+import urllib.request, zipfile
 
 VERSION = "1.8.8"
 FORGE_VERSION = "1.8.8-11.15.0.1655"
@@ -46,129 +38,94 @@ UUID = "00000000000000000000000000000000"
 ACCESS_TOKEN = "0"
 
 
-def log(msg):
-    print(f"[Oryvex] {msg}", flush=True)
+def log(m): print(f"[Oryvex] {m}", flush=True)
+def _req(u): return urllib.request.Request(u, headers={"User-Agent": UA})
 
+def http_json(u):
+    with urllib.request.urlopen(_req(u), timeout=60) as r:
+        return json.loads(r.read().decode())
 
-def _req(url):
-    return urllib.request.Request(url, headers={"User-Agent": UA})
-
-
-def http_json(url):
-    with urllib.request.urlopen(_req(url), timeout=60) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-
-def sha1_file(path):
+def sha1_file(p):
     h = hashlib.sha1()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
+    with open(p, "rb") as f:
+        for c in iter(lambda: f.read(65536), b""):
+            h.update(c)
     return h.hexdigest()
-
 
 def download(url, dest, sha1=None):
     if os.path.exists(dest) and sha1 and sha1_file(dest) == sha1:
         return
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
-    with urllib.request.urlopen(_req(url), timeout=120) as resp, open(tmp, "wb") as f:
+    with urllib.request.urlopen(_req(url), timeout=120) as r, open(tmp, "wb") as f:
         while True:
-            chunk = resp.read(65536)
-            if not chunk:
-                break
-            f.write(chunk)
+            c = r.read(65536)
+            if not c: break
+            f.write(c)
     if sha1 and sha1_file(tmp) != sha1:
-        os.remove(tmp)
-        raise RuntimeError(f"SHA1 mismatch: {url}")
-    if os.path.exists(dest):
-        os.remove(dest)
+        os.remove(tmp); raise RuntimeError(f"SHA1 mismatch: {url}")
+    if os.path.exists(dest): os.remove(dest)
     os.rename(tmp, dest)
-
 
 def find_java():
     jh = os.environ.get("JAVA_HOME")
     if jh:
         j = os.path.join(jh, "bin", "java.exe" if platform.system() == "Windows" else "java")
-        if os.path.exists(j):
-            return j
+        if os.path.exists(j): return j
     j = shutil.which("java")
-    if j:
-        return j
+    if j: return j
     raise RuntimeError("Java not found. Install Java 8 or newer.")
-
 
 def extract_natives():
     os.makedirs(NATIVES, exist_ok=True)
-    n = 0
     for root, _, files in os.walk(LIBS):
         for f in files:
-            if not f.endswith(".jar"):
-                continue
+            if not f.endswith(".jar"): continue
             try:
                 with zipfile.ZipFile(os.path.join(root, f)) as z:
                     for name in z.namelist():
                         if name.endswith((".dll", ".so", ".dylib", ".jnilib")):
                             t = os.path.join(NATIVES, os.path.basename(name))
                             if not os.path.exists(t):
-                                with z.open(name) as src, open(t, "wb") as dst:
-                                    shutil.copyfileobj(src, dst)
-                                n += 1
+                                with z.open(name) as s, open(t, "wb") as d:
+                                    shutil.copyfileobj(s, d)
             except zipfile.BadZipFile:
                 pass
-    if n:
-        log(f"Extracted {n} natives.")
-
 
 def ensure_assets():
-    """If assets are missing, try user's .minecraft, then download."""
     index_path = os.path.join(ASSETS, "indexes", "1.8.json")
-    if os.path.exists(index_path) and os.path.isdir(os.path.join(ASSETS, "objects")):
-        # check it has files
-        obj_dir = os.path.join(ASSETS, "objects")
+    obj_dir = os.path.join(ASSETS, "objects")
+    if os.path.exists(index_path) and os.path.isdir(obj_dir):
         for _ in os.scandir(obj_dir):
-            return  # has something
-    # try user's .minecraft
+            return ASSETS
     if platform.system() == "Windows":
         user_mc = os.path.join(os.environ.get("APPDATA", ""), ".minecraft")
     elif platform.system() == "Darwin":
         user_mc = os.path.expanduser("~/Library/Application Support/minecraft")
     else:
         user_mc = os.path.expanduser("~/.minecraft")
-    user_assets = os.path.join(user_mc, "assets")
-    if os.path.exists(os.path.join(user_assets, "indexes", "1.8.json")):
-        log(f"Using existing assets from {user_assets}")
-        # create symlink or use as-is via --assetsDir
-        return user_assets
-    # must download
-    log("Assets not found. Downloading (~110MB, first run only) ...")
-    manifest = http_json(MANIFEST_URL)
-    vurl = next(v["url"] for v in manifest["versions"] if v["id"] == VERSION)
-    vjson = http_json(vurl)
-    ai = vjson["assetIndex"]
+    ua = os.path.join(user_mc, "assets")
+    if os.path.exists(os.path.join(ua, "indexes", "1.8.json")):
+        log(f"Using assets from {ua}")
+        return ua
+    log("Assets missing. Downloading (~110MB) ...")
+    m = http_json(MANIFEST_URL)
+    vurl = next(v["url"] for v in m["versions"] if v["id"] == VERSION)
+    vj = http_json(vurl)
+    ai = vj["assetIndex"]
     os.makedirs(os.path.join(ASSETS, "indexes"), exist_ok=True)
     download(ai["url"], index_path, ai.get("sha1"))
     with open(index_path, encoding="utf-8") as f:
-        index = json.load(f)
-    total = len(index["objects"])
-    done = 0
-    for name, obj in index["objects"].items():
-        h = obj["hash"]
-        dest = os.path.join(ASSETS, "objects", h[:2], h)
-        if os.path.exists(dest):
-            continue
-        try:
-            download(f"{RESOURCES_URL}/{h[:2]}/{h}", dest, h)
-            done += 1
-        except Exception as e:
-            log(f"  ! {name}: {e}")
-        if done % 200 == 0 and done:
-            log(f"  ... {done}/{total}")
-    log(f"Assets ready ({done} new).")
+        idx = json.load(f)
+    for n, o in idx["objects"].items():
+        h = o["hash"]
+        d = os.path.join(ASSETS, "objects", h[:2], h)
+        if os.path.exists(d): continue
+        try: download(f"{RESOURCES_URL}/{h[:2]}/{h}", d, h)
+        except Exception as e: log(f"  ! {n}: {e}")
     return ASSETS
 
-
-def build_classpath(client_jar, forge_jar):
+def build_cp(client_jar, forge_jar):
     entries = [client_jar, forge_jar]
     for root, _, files in os.walk(LIBS):
         for f in files:
@@ -180,57 +137,38 @@ def build_classpath(client_jar, forge_jar):
                 entries.append(os.path.join(MODS, f))
     return (";" if platform.system() == "Windows" else ":").join(entries)
 
-
 def launch():
     client_jar = os.path.join(VERSIONS, VERSION, f"{VERSION}.jar")
-    forge_jar = os.path.join(LIBS, "net", "minecraftforge", "forge",
+    forge_jar = os.path.join(LIBS, "net/minecraftforge/forge",
                              FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar")
-    if not os.path.exists(client_jar):
-        raise RuntimeError(f"Missing {client_jar}")
-    if not os.path.exists(forge_jar):
-        raise RuntimeError(f"Missing {forge_jar}")
-
-    assets_dir = ensure_assets() or ASSETS
-
+    if not os.path.exists(client_jar): raise RuntimeError(f"Missing {client_jar}")
+    if not os.path.exists(forge_jar): raise RuntimeError(f"Missing {forge_jar}")
+    assets = ensure_assets() or ASSETS
     extract_natives()
     java = find_java()
-    cp = build_classpath(client_jar, forge_jar)
-
-    jvm = [
-        java, "-Xmx2G", "-Xms512M",
-        f"-Djava.library.path={NATIVES}",
-        f"-Dorg.lwjgl.librarypath={NATIVES}",
-        "-Dminecraft.launcher.brand=OryvexClient",
-        "-Dminecraft.launcher.version=1.0.0",
-        "-cp", cp,
-    ]
-    game = [
-        "net.minecraft.launchwrapper.Launch",
-        "--username", USERNAME,
-        "--version", VERSION,
-        "--gameDir", ROOT,
-        "--assetsDir", assets_dir,
-        "--assetIndex", "1.8",
-        "--uuid", UUID,
-        "--accessToken", ACCESS_TOKEN,
-        "--userProperties", "{}",
-        "--userType", "legacy",
-        "--tweakClass", "net.minecraftforge.fml.common.launcher.FMLTweaker",
-    ]
+    cp = build_cp(client_jar, forge_jar)
+    jvm = [java, "-Xmx2G", "-Xms512M",
+           f"-Djava.library.path={NATIVES}",
+           f"-Dorg.lwjgl.librarypath={NATIVES}",
+           "-Dminecraft.launcher.brand=OryvexClient",
+           "-Dminecraft.launcher.version=1.0.0",
+           "-cp", cp]
+    game = ["net.minecraft.launchwrapper.Launch",
+            "--username", USERNAME, "--version", VERSION,
+            "--gameDir", ROOT, "--assetsDir", assets, "--assetIndex", "1.8",
+            "--uuid", UUID, "--accessToken", ACCESS_TOKEN,
+            "--userProperties", "{}", "--userType", "legacy",
+            "--tweakClass", "net.minecraftforge.fml.common.launcher.FMLTweaker"]
     log("Launching Minecraft ...")
-    try:
-        subprocess.run(jvm + game, cwd=ROOT)
-    except KeyboardInterrupt:
-        pass
-
+    try: subprocess.run(jvm + game, cwd=ROOT)
+    except KeyboardInterrupt: pass
 
 if __name__ == "__main__":
     try:
         launch()
     except Exception as e:
         log(f"ERROR: {e}")
-        if platform.system() == "Windows":
-            input("Press Enter to exit ...")
+        if platform.system() == "Windows": input("Press Enter to exit ...")
         sys.exit(1)
 '''
 
@@ -241,12 +179,10 @@ START_BAT = r'''@echo off
 setlocal
 title OryvexClient Launcher
 cd /d "%~dp0"
-
 echo ==========================================
 echo    OryvexClient  -  Minecraft 1.8.8
 echo ==========================================
 echo.
-
 where python >nul 2>nul
 if errorlevel 1 (
     where py >nul 2>nul
@@ -255,7 +191,6 @@ if errorlevel 1 (
 ) else (
     set "PY=python"
 )
-
 "%PY%" launcher.py
 if errorlevel 1 (
     echo.
@@ -263,7 +198,6 @@ if errorlevel 1 (
     pause
 )
 exit /b 0
-
 :nopython
 echo Python 3 is required but was not found.
 echo Download it from https://www.python.org/downloads/
@@ -272,28 +206,25 @@ exit /b 1
 '''
 
 # ===========================================================================
-# download_mc.py — NO assets
+# download_mc.py — NOW WITH FORGE version.json parsing
 # ===========================================================================
 DOWNLOAD_MC_PY = r'''#!/usr/bin/env python3
-"""Download Minecraft 1.8.8 + Forge + libraries (NO assets)."""
-import hashlib
-import json
-import os
-import sys
-import urllib.request
+"""Download Minecraft 1.8.8 + Forge + all Forge libraries + vanilla libs (NO assets)."""
+import hashlib, io, json, os, sys, urllib.request, zipfile
 
 VERSION = "1.8.8"
 FORGE_VERSION = "1.8.8-11.15.0.1655"
-FORGE_URL = (f"https://maven.minecraftforge.net/net/minecraftforge/forge/"
-             f"{FORGE_VERSION}/forge-{FORGE_VERSION}-universal.jar")
+FORGE_INSTALLER_URL = (f"https://maven.minecraftforge.net/net/minecraftforge/forge/"
+                       f"{FORGE_VERSION}/forge-{FORGE_VERSION}-installer.jar")
+FORGE_UNIVERSAL_URL = (f"https://maven.minecraftforge.net/net/minecraftforge/forge/"
+                       f"{FORGE_VERSION}/forge-{FORGE_VERSION}-universal.jar")
 MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
 
-def log(m):
-    print(f"[dl] {m}", flush=True)
-
+def log(m): print(f"[dl] {m}", flush=True)
+def _req(u): return urllib.request.Request(u, headers={"User-Agent": UA})
 
 def sha1_file(p):
     h = hashlib.sha1()
@@ -301,11 +232,6 @@ def sha1_file(p):
         for c in iter(lambda: f.read(65536), b""):
             h.update(c)
     return h.hexdigest()
-
-
-def _req(u):
-    return urllib.request.Request(u, headers={"User-Agent": UA})
-
 
 def download(url, dest, sha1=None):
     if os.path.exists(dest) and sha1 and sha1_file(dest) == sha1:
@@ -315,21 +241,16 @@ def download(url, dest, sha1=None):
     with urllib.request.urlopen(_req(url), timeout=120) as r, open(tmp, "wb") as f:
         while True:
             c = r.read(65536)
-            if not c:
-                break
+            if not c: break
             f.write(c)
     if sha1 and sha1_file(tmp) != sha1:
-        os.remove(tmp)
-        raise RuntimeError(f"SHA1 mismatch: {url}")
-    if os.path.exists(dest):
-        os.remove(dest)
+        os.remove(tmp); raise RuntimeError(f"SHA1 mismatch: {url}")
+    if os.path.exists(dest): os.remove(dest)
     os.rename(tmp, dest)
-
 
 def http_json(u):
     with urllib.request.urlopen(_req(u), timeout=60) as r:
         return json.loads(r.read().decode())
-
 
 def maven_path(n):
     p = n.split(":")
@@ -339,11 +260,47 @@ def maven_path(n):
     fn = f"{a}-{v}" + (f"-{cls}" if cls else "") + f".{ext}"
     return "/".join(g.split(".")) + f"/{a}/{v}/{fn}"
 
+def get_lib_url(name, base="https://libraries.minecraft.net/"):
+    """Build fallback URL for maven coordinate."""
+    return base + maven_path(name)
+
+def install_libs_from_json(vj, libs, forge=False):
+    """Download all libraries from a version JSON."""
+    count = 0
+    for lib in vj.get("libraries", []):
+        # skip native-only entries when not forge
+        dl = lib.get("downloads", {})
+        art = dl.get("artifact")
+        if art and art.get("url"):
+            url = art["url"]
+            sha1 = art.get("sha1")
+        else:
+            # forge-style: build URL from maven
+            name = lib["name"]
+            url = get_lib_url(name)
+            sha1 = None
+        try:
+            dest = os.path.join(libs, maven_path(lib["name"]))
+            # handle natives
+            for k, v in (dl.get("classifiers") or {}).items():
+                if v.get("url"):
+                    npath = maven_path(lib["name"] + ":" + k)
+                    ndest = os.path.join(libs, npath)
+                    download(v["url"], ndest, v.get("sha1"))
+                    count += 1
+            # skip if already exists
+            if not os.path.exists(dest):
+                download(url, dest, sha1)
+                count += 1
+        except Exception as e:
+            log(f"  ! lib {lib['name']}: {e}")
+    return count
 
 def main(target):
     libs = os.path.join(target, "libraries")
     versions = os.path.join(target, "versions")
 
+    # --- vanilla ---
     log("Fetching manifest ...")
     m = http_json(MANIFEST_URL)
     vurl = next(v["url"] for v in m["versions"] if v["id"] == VERSION)
@@ -353,27 +310,35 @@ def main(target):
     log("Downloading client.jar ...")
     download(c["url"], os.path.join(versions, VERSION, f"{VERSION}.jar"), c.get("sha1"))
 
-    log("Downloading libraries ...")
-    for lib in vj["libraries"]:
-        dl = lib.get("downloads", {})
-        if dl.get("artifact"):
-            download(dl["artifact"]["url"],
-                     os.path.join(libs, maven_path(lib["name"])),
-                     dl["artifact"].get("sha1"))
-        for k in set(lib.get("natives", {}).values()):
-            if k in dl.get("classifiers", {}):
-                cl = dl["classifiers"][k]
-                download(cl["url"],
-                         os.path.join(libs, maven_path(lib["name"] + ":" + k)),
-                         cl.get("sha1"))
+    log("Downloading vanilla libraries ...")
+    n = install_libs_from_json(vj, libs)
+    log(f"  -> {n} libs")
 
+    # --- Forge installer ---
+    log("Downloading Forge installer ...")
+    installer_tmp = os.path.join(target, "_forge_installer.jar")
+    download(FORGE_INSTALLER_URL, installer_tmp)
+
+    log("Extracting Forge version.json ...")
+    with zipfile.ZipFile(installer_tmp) as z:
+        version_json_bytes = z.read("version.json")
+    forge_vj = json.loads(version_json_bytes.decode("utf-8"))
+
+    log("Downloading Forge libraries ...")
+    n = install_libs_from_json(forge_vj, libs, forge=True)
+    log(f"  -> {n} libs")
+
+    # --- Forge universal jar ---
     log("Downloading Forge universal ...")
-    download(FORGE_URL,
+    download(FORGE_UNIVERSAL_URL,
              os.path.join(libs, "net/minecraftforge/forge",
                           FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar"))
 
-    log("Done (assets NOT downloaded — will be reused from user's .minecraft).")
+    # --- cleanup ---
+    if os.path.exists(installer_tmp):
+        os.remove(installer_tmp)
 
+    log("Done (no assets — reused from user's .minecraft).")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -425,7 +390,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download Minecraft client + libraries + Forge
+      - name: Download Minecraft + Forge + libs
         run: |
           mkdir -p dist
           python3 download_mc.py dist/mc-data
@@ -434,11 +399,12 @@ jobs:
         run: |
           mkdir -p dist/mods
           JAR=$(ls build/libs/*.jar | grep -v -e sources -e dev | head -n 1)
-          echo "Using $JAR"
           cp "$JAR" dist/mods/OryvexClient.jar
           cp start.bat dist/start.bat
           cp launcher.py dist/launcher.py
+          echo "--- sizes ---"
           du -sh dist
+          find dist/mc-data/libraries -name "*launchwrapper*" -o -name "*asm-all*" | head
 
       - name: Create ZIP
         run: |
@@ -456,7 +422,7 @@ jobs:
           retention-days: 7
 '''
 
-GITIGNORE_ADD = "\n# OryvexClient build artifacts\nmc-data/\nmods/\ndist/\n"
+GITIGNORE_ADD = "\n# OryvexClient build artifacts\nmc-data/\nmods/\ndist/\n_forge_installer.jar\n"
 
 
 def write(path, content, is_bat=False):
@@ -483,19 +449,14 @@ def append_once(path, marker, content):
 
 
 def main():
-    print("OryvexClient Fixer v3 (small ZIP, no assets)")
+    print("OryvexClient Fixer v4 (Forge libs via installer version.json)")
     print(f"Project root: {ROOT}\n")
-    print("[1/5] launcher.py")
-    write(ROOT / "launcher.py", LAUNCHER_PY)
-    print("[2/5] start.bat")
-    write(ROOT / "start.bat", START_BAT, is_bat=True)
-    print("[3/5] download_mc.py")
-    write(ROOT / "download_mc.py", DOWNLOAD_MC_PY)
-    print("[4/5] workflow")
-    write(ROOT / ".github" / "workflows" / "build.yml", WORKFLOW_YML)
-    print("[5/5] .gitignore")
-    append_once(ROOT / ".gitignore", "mc-data/", GITIGNORE_ADD)
-    print("\nDone. ZIP will be ~25-35 MB.")
+    print("[1/5] launcher.py"); write(ROOT / "launcher.py", LAUNCHER_PY)
+    print("[2/5] start.bat"); write(ROOT / "start.bat", START_BAT, is_bat=True)
+    print("[3/5] download_mc.py"); write(ROOT / "download_mc.py", DOWNLOAD_MC_PY)
+    print("[4/5] workflow"); write(ROOT / ".github" / "workflows" / "build.yml", WORKFLOW_YML)
+    print("[5/5] .gitignore"); append_once(ROOT / ".gitignore", "mc-data/", GITIGNORE_ADD)
+    print("\nDone.")
 
 
 if __name__ == "__main__":

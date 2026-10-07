@@ -2,12 +2,10 @@
 setlocal
 title OryvexClient Launcher
 cd /d "%~dp0"
-
 echo ==========================================
 echo    OryvexClient  -  Minecraft 1.8.8
 echo ==========================================
 echo.
-
 where python >nul 2>nul
 if errorlevel 1 (
     where py >nul 2>nul
@@ -16,7 +14,6 @@ if errorlevel 1 (
 ) else (
     set "PY=python"
 )
-
 "%PY%" launcher.py
 if errorlevel 1 (
     echo.
@@ -24,7 +21,6 @@ if errorlevel 1 (
     pause
 )
 exit /b 0
-
 :nopython
 echo Python 3 is required but was not found.
 echo Download it from https://www.python.org/downloads/

@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download Minecraft client + libraries + Forge
+      - name: Download Minecraft + Forge + libs
         run: |
           mkdir -p dist
           python3 download_mc.py dist/mc-data
@@ -47,11 +47,12 @@ jobs:
         run: |
           mkdir -p dist/mods
           JAR=$(ls build/libs/*.jar | grep -v -e sources -e dev | head -n 1)
-          echo "Using $JAR"
           cp "$JAR" dist/mods/OryvexClient.jar
           cp start.bat dist/start.bat
           cp launcher.py dist/launcher.py
+          echo "--- sizes ---"
           du -sh dist
+          find dist/mc-data/libraries -name "*launchwrapper*" -o -name "*asm-all*" | head
 
       - name: Create ZIP
         run: |
