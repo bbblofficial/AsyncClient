@@ -25,19 +25,14 @@ public final class LoadingProgress {
         subProgress = clamp(sub);
     }
 
-    public static void setSub(float sub) {
-        subProgress = clamp(sub);
-    }
+    public static void setSub(float sub)        { subProgress = clamp(sub); }
+    public static void setMessage(String msg)   { customMessage = msg == null ? "" : msg; }
 
-    public static void setMessage(String msg) {
-        customMessage = msg == null ? "" : msg;
-    }
-
-    public static LoadingPhase getPhase()        { return phase; }
-    public static float getSubProgress()         { return subProgress; }
-    public static String getCustomMessage()      { return customMessage; }
-    public static boolean isScreenActive()       { return screenActive; }
-    public static void setScreenActive(boolean b) { screenActive = b; }
+    public static LoadingPhase getPhase()       { return phase; }
+    public static float getSubProgress()        { return subProgress; }
+    public static String getCustomMessage()     { return customMessage; }
+    public static boolean isScreenActive()      { return screenActive; }
+    public static void setScreenActive(boolean b){ screenActive = b; }
 
     /** Absolute 0..100 percent across all phases. */
     public static int getPercent() {

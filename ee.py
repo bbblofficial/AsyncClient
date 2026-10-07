@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
 """
-fixer.py — repair the GeminiClient / Oryvex repo, install a custom
-loading screen, and broadcast progress from every startup phase.
+fixer.py — repair the GeminiClient / Oryvex repo, install a full-phase
+custom loading screen, and normalise the GitHub Actions workflow.
 
 What it does
 ------------
-1.  Backs the repo up to a timestamped .zip next to it.
-2.  Deletes the broken duplicate mod  src/main/java/com/oryvex/.
-3.  Adds a complete, phase-aware loading screen system:
+ 1. Backs the repo up to a timestamped .zip next to it.
+ 2. Deletes the broken duplicate mod  src/main/java/com/oryvex/.
+ 3. Writes the loading-screen system:
         loading/LoadingPhase.java
-        loading/LoadingScreenHook.java
-        loading/CustomLoadingScreen.java
         loading/LoadingProgress.java
-        loading/LoadingProgressHandler.java
+        loading/CustomLoadingScreen.java
+        loading/LoadingScreenHook.java
+        loading/LoadingProgressHandler.java   (TickEvent + GuiOpenEvent only)
         loading/TerrainLoadListener.java
+    and (unless --no-coremod) the ASM coremod:
         core/LoadingScreenTransformer.java
         core/AsyncMenusLoadingPlugin.java
-4.  Rewrites  AsyncMenus.java  to install the hook on preInit and to
-    register the progress handlers.
-5.  Generates a placeholder logo PNG (or copies --custom-logo).
-6.  Adds the FMLCorePlugin manifest attributes to build.gradle.
-7.  Normalises .github/workflows/build.yml.
-8.  Validates that no file still imports com.oryvex.*.
+ 4. Rewrites  AsyncMenus.java  to use @Mod.EventHandler for every FML
+    lifecycle event (these are NOT Event subclasses in 1.8.9, so they
+    cannot be registered with @SubscribeEvent on MinecraftForge.EVENT_BUS).
+ 5. Generates a placeholder logo PNG (or copies --custom-logo).
+ 6. Adds FMLCorePlugin manifest attributes to build.gradle.
+ 7. Rewrites the "Upload jar" step in .github/workflows/build.yml
+    idempotently (no duplicate keys, correct indentation).
+ 8. Validates that no file still imports com.oryvex.*.
 
 Usage
 -----
@@ -30,7 +33,7 @@ Usage
     python fixer.py --custom-logo my_logo.png
     python fixer.py --dry-run
     python fixer.py --no-backup
-    python fixer.py --no-coremod        # skip the ASM transformer
+    python fixer.py --no-coremod
 """
 
 from __future__ import annotations
@@ -58,11 +61,8 @@ CORE_PKG    = PKG_ROOT / "core"
 
 ASYNC_MENUS_REL = PKG_ROOT / "AsyncMenus.java"
 
-TEXTURE_REL = Path(
-    "src/main/resources/assets/asyncmenus/textures/gui/custom_loading.png"
-)
-
-WORKFLOW_REL = Path(".github/workflows/build.yml")
+TEXTURE_REL      = Path("src/main/resources/assets/asyncmenus/textures/gui/custom_loading.png")
+WORKFLOW_REL     = Path(".github/workflows/build.yml")
 BUILD_GRADLE_REL = Path("build.gradle")
 
 ARTIFACT_NAME    = "AsyncMenus-jar"
@@ -79,16 +79,16 @@ LOADING_PHASE_JAVA = r"""package com.example.asyncmenus.loading;
 
 /** Every distinct startup / reload phase we report progress for. */
 public enum LoadingPhase {
-    MOD_CONSTRUCTION   ("Constructing mods",      5),
-    PRE_INIT           ("Pre-initializing mods", 10),
-    INIT               ("Initializing mods",     20),
-    POST_INIT          ("Post-initializing mods",30),
-    RESOURCE_LOAD      ("Loading resources",     45),
-    START_GAME         ("Starting game",         60),
-    TERRAIN            ("Building terrain",      75),
-    JOINING_WORLD      ("Joining world",         85),
-    RELOADING          ("Reloading resources",   50),
-    DONE               ("Done",                 100);
+    MOD_CONSTRUCTION   ("Constructing mods",       5),
+    PRE_INIT           ("Pre-initializing mods",  10),
+    INIT               ("Initializing mods",      20),
+    POST_INIT          ("Post-initializing mods", 30),
+    RESOURCE_LOAD      ("Loading resources",      45),
+    START_GAME         ("Starting game",          60),
+    TERRAIN            ("Building terrain",       75),
+    JOINING_WORLD      ("Joining world",          85),
+    RELOADING          ("Reloading resources",    50),
+    DONE               ("Done",                  100);
 
     public final String label;
     public final int basePercent;
@@ -127,19 +127,14 @@ public final class LoadingProgress {
         subProgress = clamp(sub);
     }
 
-    public static void setSub(float sub) {
-        subProgress = clamp(sub);
-    }
+    public static void setSub(float sub)        { subProgress = clamp(sub); }
+    public static void setMessage(String msg)   { customMessage = msg == null ? "" : msg; }
 
-    public static void setMessage(String msg) {
-        customMessage = msg == null ? "" : msg;
-    }
-
-    public static LoadingPhase getPhase()        { return phase; }
-    public static float getSubProgress()         { return subProgress; }
-    public static String getCustomMessage()      { return customMessage; }
-    public static boolean isScreenActive()       { return screenActive; }
-    public static void setScreenActive(boolean b) { screenActive = b; }
+    public static LoadingPhase getPhase()       { return phase; }
+    public static float getSubProgress()        { return subProgress; }
+    public static String getCustomMessage()     { return customMessage; }
+    public static boolean isScreenActive()      { return screenActive; }
+    public static void setScreenActive(boolean b){ screenActive = b; }
 
     /** Absolute 0..100 percent across all phases. */
     public static int getPercent() {
@@ -235,11 +230,9 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         int sw = sr.getScaledWidth();
         int sh = sr.getScaledHeight();
 
-        // Background
         GlStateManager.clearColor(0.06F, 0.06F, 0.08F, 1.0F);
         GlStateManager.clear(16640);
 
-        // 2D projection
         GlStateManager.matrixMode(GL11.GL_PROJECTION);
         GlStateManager.loadIdentity();
         GlStateManager.ortho(0.0D, sw, sh, 0.0D, 1000.0D, 3000.0D);
@@ -254,7 +247,6 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         GlStateManager.enableBlend();
         GlStateManager.color(1F, 1F, 1F, 1F);
 
-        // Logo
         try {
             mc.getTextureManager().bindTexture(LOGO);
             int lw = 128, lh = 128;
@@ -267,23 +259,19 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         int percent = LoadingProgress.getPercent();
         String custom = LoadingProgress.getCustomMessage();
 
-        // Title (phase label)
         String title = phase.label;
         fr.drawStringWithShadow(title,
                 (sw - fr.getStringWidth(title)) / 2, sh / 2 + 50, 0xFFFFFF);
 
-        // Custom message from vanilla or mods
         if (!custom.isEmpty()) {
             fr.drawStringWithShadow(custom,
                     (sw - fr.getStringWidth(custom)) / 2, sh / 2 + 66, 0xAAAAAA);
         }
 
-        // Percent
         String pctStr = percent + "%";
         fr.drawStringWithShadow(pctStr,
                 (sw - fr.getStringWidth(pctStr)) / 2, sh / 2 + 82, 0xCCCCCC);
 
-        // Progress bar
         int barW = 240, barH = 5;
         int barX = (sw - barW) / 2;
         int barY = sh / 2 + 100;
@@ -396,56 +384,24 @@ public final class LoadingScreenHook {
 
 LOADING_PROGRESS_HANDLER_JAVA = r"""package com.example.asyncmenus.loading;
 
-import net.minecraftforge.fml.common.event.FMLConstructionEvent;
-import net.minecraftforge.fml.common.event.FMLInitializationEvent;
-import net.minecraftforge.fml.common.event.FMLPostInitializationEvent;
-import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
+import net.minecraft.client.gui.GuiMainMenu;
+import net.minecraftforge.client.event.GuiOpenEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
-import net.minecraftforge.client.event.GuiOpenEvent;
-import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 
 /**
- * Subscribes to Forge's startup events and pushes them into the global
- * LoadingProgress bus. Also forces a redraw each client tick while the
- * loading screen is active.
+ * Handles only real Forge Event subclasses.
+ *
+ * FML lifecycle events (FMLPreInitializationEvent, FMLInitializationEvent,
+ * FMLPostInitializationEvent, FMLConstructionEvent) are NOT subclasses of
+ * net.minecraftforge.fml.common.eventhandler.Event, so they MUST be wired
+ * via @Mod.EventHandler on the mod class rather than @SubscribeEvent here.
  */
 @SideOnly(Side.CLIENT)
 public class LoadingProgressHandler {
 
-    private boolean showedPreInit;
-    private boolean showedInit;
-    private boolean showedPostInit;
-
-    @SubscribeEvent
-    public void onConstruct(FMLConstructionEvent e) {
-        LoadingProgress.setPhase(LoadingPhase.MOD_CONSTRUCTION, 0.5f);
-    }
-
-    @SubscribeEvent
-    public void onPreInit(FMLPreInitializationEvent e) {
-        if (showedPreInit) return;
-        showedPreInit = true;
-        LoadingProgress.setPhase(LoadingPhase.PRE_INIT, 0.1f);
-    }
-
-    @SubscribeEvent
-    public void onInit(FMLInitializationEvent e) {
-        if (showedInit) return;
-        showedInit = true;
-        LoadingProgress.setPhase(LoadingPhase.INIT, 0.1f);
-    }
-
-    @SubscribeEvent
-    public void onPostInit(FMLPostInitializationEvent e) {
-        if (showedPostInit) return;
-        showedPostInit = true;
-        LoadingProgress.setPhase(LoadingPhase.POST_INIT, 0.1f);
-    }
-
-    /** Force a redraw each client tick while we own the screen. */
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
@@ -454,7 +410,6 @@ public class LoadingProgressHandler {
         try { screen.tick(); } catch (Throwable ignored) {}
     }
 
-    /** Hide the overlay once the main menu appears. */
     @SubscribeEvent
     public void onGuiOpen(GuiOpenEvent e) {
         if (e.gui instanceof GuiMainMenu) {
@@ -474,11 +429,8 @@ import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 
 /**
- * Reports world/terrain progress so the loading screen can say
+ * Reports world / terrain progress so the loading screen can say
  * "Building terrain" / "Joining world" during world load.
- *
- * Also catches the ResourcePack reload via GuiScreenEvent when a
- * GuiScreenResourcePack is about to open.
  */
 @SideOnly(Side.CLIENT)
 public class TerrainLoadListener {
@@ -488,11 +440,6 @@ public class TerrainLoadListener {
         LoadingProgress.setScreenActive(true);
         LoadingProgress.setPhase(LoadingPhase.TERRAIN, 0.1f);
         LoadingProgress.setMessage("Downloading terrain");
-    }
-
-    @SubscribeEvent
-    public void onWorldUnload(WorldEvent.Unload e) {
-        // nothing to do yet; kept for symmetry
     }
 
     @SubscribeEvent
@@ -515,12 +462,16 @@ public class TerrainLoadListener {
 
 ASYNC_MENUS_JAVA = r"""package com.example.asyncmenus;
 
+import com.example.asyncmenus.loading.LoadingPhase;
+import com.example.asyncmenus.loading.LoadingProgress;
 import com.example.asyncmenus.loading.LoadingProgressHandler;
 import com.example.asyncmenus.loading.LoadingScreenHook;
 import com.example.asyncmenus.loading.TerrainLoadListener;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.common.event.FMLConstructionEvent;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
+import net.minecraftforge.fml.common.event.FMLPostInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 
 @Mod(modid = AsyncMenus.MODID, name = AsyncMenus.NAME, version = AsyncMenus.VERSION,
@@ -531,19 +482,32 @@ public class AsyncMenus {
     public static final String VERSION = "1.0.0";
 
     @Mod.EventHandler
+    public void construct(FMLConstructionEvent event) {
+        LoadingProgress.setPhase(LoadingPhase.MOD_CONSTRUCTION, 0.5f);
+    }
+
+    @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
-        // Install the loading screen before anything else.
+        LoadingProgress.setPhase(LoadingPhase.PRE_INIT, 0.1f);
+
         LoadingScreenHook.install();
 
-        // Progress handlers: Forge bus for lifecycle events...
+        // Only real Forge Event subclasses go on the EVENT_BUS:
         MinecraftForge.EVENT_BUS.register(new LoadingProgressHandler());
         MinecraftForge.EVENT_BUS.register(new TerrainLoadListener());
     }
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
+        LoadingProgress.setPhase(LoadingPhase.INIT, 0.1f);
+
         MinecraftForge.EVENT_BUS.register(new ResourcePackScreenHandler());
         MinecraftForge.EVENT_BUS.register(new ShaderPackPrefetcher());
+    }
+
+    @Mod.EventHandler
+    public void postInit(FMLPostInitializationEvent event) {
+        LoadingProgress.setPhase(LoadingPhase.POST_INIT, 0.1f);
     }
 }
 """
@@ -749,12 +713,11 @@ def install_texture(repo: Path, custom: Path | None, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# build.gradle — add coremod manifest attributes
+# build.gradle — add FMLCorePlugin manifest attributes
 # ---------------------------------------------------------------------------
 
 
 def patch_build_gradle(repo: Path, dry_run: bool, enable_coremod: bool) -> bool:
-    """Ensure a `jar { manifest { ... } }` block exists if coremod is on."""
     if not enable_coremod:
         log("skipping build.gradle coremod patch (--no-coremod)")
         return False
@@ -766,7 +729,6 @@ def patch_build_gradle(repo: Path, dry_run: bool, enable_coremod: bool) -> bool:
 
     text = path.read_text(encoding="utf-8")
 
-    # Already present?
     if CORE_PLUGIN_CLASS in text:
         log("build.gradle already declares the coremod")
         return False
@@ -775,9 +737,9 @@ def patch_build_gradle(repo: Path, dry_run: bool, enable_coremod: bool) -> bool:
         "\n"
         "jar {\n"
         "    manifest {\n"
-        f"        attributes(\n"
+        "        attributes(\n"
         f"            'FMLCorePlugin': '{CORE_PLUGIN_CLASS}',\n"
-        f"            'FMLCorePluginContainsFMLMod': 'true'\n"
+        "            'FMLCorePluginContainsFMLMod': 'true'\n"
         "        )\n"
         "    }\n"
         "}\n"
@@ -790,7 +752,7 @@ def patch_build_gradle(repo: Path, dry_run: bool, enable_coremod: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Workflow
+# Workflow — idempotent rewrite of the Upload step
 # ---------------------------------------------------------------------------
 
 
@@ -802,9 +764,11 @@ def rewrite_workflow(repo: Path, dry_run: bool) -> bool:
 
     original = wf.read_text(encoding="utf-8")
 
+    # Match the whole "Upload jar" step (name + any following indented
+    # lines). `*` instead of `+` so an empty step still matches.
     step_re = re.compile(
         r"(?P<indent>[ \t]*)-[ \t]*name:[ \t]*Upload jar[ \t]*\r?\n"
-        r"(?P<body>(?:[ \t]+[^\n]*\r?\n)+)",
+        r"(?P<body>(?:[ \t]+[^\n]*\r?\n)*)",
         re.MULTILINE,
     )
     m = step_re.search(original)
@@ -870,7 +834,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--custom-logo", type=Path, default=None)
     p.add_argument("--no-backup", action="store_true")
     p.add_argument("--no-coremod", action="store_true",
-                   help="skip the ASM transformer / FMLCorePlugin patch")
+                   help="skip ASM transformer / FMLCorePlugin patch")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
@@ -896,8 +860,7 @@ def main(argv: list[str] | None = None) -> int:
 
     removed = remove_broken_package(repo, args.dry_run)
 
-    # Loading system
-    writes = {
+    writes: dict[str, tuple[Path, str]] = {
         "LoadingPhase.java":           (LOADING_PKG / "LoadingPhase.java",            LOADING_PHASE_JAVA),
         "LoadingProgress.java":        (LOADING_PKG / "LoadingProgress.java",         LOADING_PROGRESS_JAVA),
         "CustomLoadingScreen.java":    (LOADING_PKG / "CustomLoadingScreen.java",     CUSTOM_LOADING_JAVA),
@@ -906,14 +869,12 @@ def main(argv: list[str] | None = None) -> int:
         "TerrainLoadListener.java":    (LOADING_PKG / "TerrainLoadListener.java",     TERRAIN_LOAD_LISTENER_JAVA),
     }
 
-    # Coremod (optional)
     if not args.no_coremod:
         writes["LoadingScreenTransformer.java"] = (
             CORE_PKG / "LoadingScreenTransformer.java", LOADING_SCREEN_TRANSFORMER_JAVA)
         writes["AsyncMenusLoadingPlugin.java"] = (
             CORE_PKG / "AsyncMenusLoadingPlugin.java",  LOADING_PLUGIN_JAVA)
 
-    # Mod entry point (always)
     writes["AsyncMenus.java"] = (ASYNC_MENUS_REL, ASYNC_MENUS_JAVA)
 
     changed = 0

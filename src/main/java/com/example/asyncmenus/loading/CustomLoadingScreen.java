@@ -68,11 +68,9 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         int sw = sr.getScaledWidth();
         int sh = sr.getScaledHeight();
 
-        // Background
         GlStateManager.clearColor(0.06F, 0.06F, 0.08F, 1.0F);
         GlStateManager.clear(16640);
 
-        // 2D projection
         GlStateManager.matrixMode(GL11.GL_PROJECTION);
         GlStateManager.loadIdentity();
         GlStateManager.ortho(0.0D, sw, sh, 0.0D, 1000.0D, 3000.0D);
@@ -87,7 +85,6 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         GlStateManager.enableBlend();
         GlStateManager.color(1F, 1F, 1F, 1F);
 
-        // Logo
         try {
             mc.getTextureManager().bindTexture(LOGO);
             int lw = 128, lh = 128;
@@ -100,23 +97,19 @@ public class CustomLoadingScreen extends LoadingScreenRenderer {
         int percent = LoadingProgress.getPercent();
         String custom = LoadingProgress.getCustomMessage();
 
-        // Title (phase label)
         String title = phase.label;
         fr.drawStringWithShadow(title,
                 (sw - fr.getStringWidth(title)) / 2, sh / 2 + 50, 0xFFFFFF);
 
-        // Custom message from vanilla or mods
         if (!custom.isEmpty()) {
             fr.drawStringWithShadow(custom,
                     (sw - fr.getStringWidth(custom)) / 2, sh / 2 + 66, 0xAAAAAA);
         }
 
-        // Percent
         String pctStr = percent + "%";
         fr.drawStringWithShadow(pctStr,
                 (sw - fr.getStringWidth(pctStr)) / 2, sh / 2 + 82, 0xCCCCCC);
 
-        // Progress bar
         int barW = 240, barH = 5;
         int barX = (sw - barW) / 2;
         int barY = sh / 2 + 100;

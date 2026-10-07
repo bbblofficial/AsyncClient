@@ -7,11 +7,8 @@ import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 
 /**
- * Reports world/terrain progress so the loading screen can say
+ * Reports world / terrain progress so the loading screen can say
  * "Building terrain" / "Joining world" during world load.
- *
- * Also catches the ResourcePack reload via GuiScreenEvent when a
- * GuiScreenResourcePack is about to open.
  */
 @SideOnly(Side.CLIENT)
 public class TerrainLoadListener {
@@ -21,11 +18,6 @@ public class TerrainLoadListener {
         LoadingProgress.setScreenActive(true);
         LoadingProgress.setPhase(LoadingPhase.TERRAIN, 0.1f);
         LoadingProgress.setMessage("Downloading terrain");
-    }
-
-    @SubscribeEvent
-    public void onWorldUnload(WorldEvent.Unload e) {
-        // nothing to do yet; kept for symmetry
     }
 
     @SubscribeEvent
