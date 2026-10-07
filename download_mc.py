@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""
+Download Minecraft 1.8.8 + Forge + libraries + assets into a target directory.
+Usage: python download_mc.py <target_dir>
+"""
+import hashlib
+import json
+import os
+import platform
+import sys
+import urllib.request
+
+VERSION = "1.8.8"
+FORGE_VERSION = "1.8.8-11.15.0.1655"
+FORGE_UNIVERSAL_URL = (
+    f"https://maven.minecraftforge.net/net/minecraftforge/forge/"
+    f"{FORGE_VERSION}/forge-{FORGE_VERSION}-universal.jar"
+)
+MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
+RESOURCES_URL = "https://resources.download.minecraft.net"
+
+
+def log(msg):
+    print(f"[dl] {msg}", flush=True)
+
+
+def sha1_file(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(url, dest, sha1=None):
+    if os.path.exists(dest) and sha1 and sha1_file(dest) == sha1:
+        return
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".part"
+    urllib.request.urlretrieve(url, tmp)
+    if sha1 and sha1_file(tmp) != sha1:
+        os.remove(tmp)
+        raise RuntimeError(f"SHA1 mismatch: {url}")
+    if os.path.exists(dest):
+        os.remove(dest)
+    os.rename(tmp, dest)
+
+
+def http_json(url):
+    with urllib.request.urlopen(url) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def maven_to_path(name):
+    parts = name.split(":")
+    group, artifact, version = parts[0], parts[1], parts[2]
+    classifier = parts[3] if len(parts) > 3 else None
+    ext = parts[4] if len(parts) > 4 else "jar"
+    filename = f"{artifact}-{version}"
+    if classifier:
+        filename += f"-{classifier}"
+    filename += f".{ext}"
+    return "/".join(group.split(".")) + f"/{artifact}/{version}/{filename}"
+
+
+def main(target):
+    libs = os.path.join(target, "libraries")
+    assets = os.path.join(target, "assets")
+    versions = os.path.join(target, "versions")
+
+    log("Fetching version manifest ...")
+    manifest = http_json(MANIFEST_URL)
+    version_url = next(v["url"] for v in manifest["versions"] if v["id"] == VERSION)
+    vjson = http_json(version_url)
+
+    # --- client.jar ---
+    client = vjson["downloads"]["client"]
+    client_dest = os.path.join(versions, VERSION, f"{VERSION}.jar")
+    log("Downloading client.jar ...")
+    download(client["url"], client_dest, client.get("sha1"))
+
+    # --- libraries (artifact + natives for all OSes) ---
+    log("Downloading libraries ...")
+    for lib in vjson["libraries"]:
+        downloads = lib.get("downloads", {})
+        artifact = downloads.get("artifact")
+        if artifact:
+            rel = maven_to_path(lib["name"])
+            download(artifact["url"], os.path.join(libs, rel), artifact.get("sha1"))
+        classifiers = downloads.get("classifiers", {})
+        natives = lib.get("natives", {})
+        for os_key in set(natives.values()):
+            if os_key in classifiers:
+                cls = classifiers[os_key]
+                rel = maven_to_path(lib["name"] + ":" + os_key)
+                download(cls["url"], os.path.join(libs, rel), cls.get("sha1"))
+
+    # --- Forge ---
+    log("Downloading Forge universal ...")
+    forge_dest = os.path.join(libs, "net", "minecraftforge", "forge",
+                              FORGE_VERSION, f"forge-{FORGE_VERSION}-universal.jar")
+    download(FORGE_UNIVERSAL_URL, forge_dest)
+
+    # --- assets ---
+    asset_index = vjson.get("assetIndex")
+    if asset_index:
+        index_path = os.path.join(assets, "indexes", asset_index["id"] + ".json")
+        log(f"Downloading asset index {asset_index['id']} ...")
+        download(asset_index["url"], index_path, asset_index.get("sha1"))
+        with open(index_path, encoding="utf-8") as f:
+            index = json.load(f)
+        total = len(index["objects"])
+        log(f"Downloading {total} assets ...")
+        done = 0
+        skipped = 0
+        for name, obj in index["objects"].items():
+            h = obj["hash"]
+            prefix = h[:2]
+            dest = os.path.join(assets, "objects", prefix, h)
+            if os.path.exists(dest):
+                skipped += 1
+                continue
+            url = f"{RESOURCES_URL}/{prefix}/{h}"
+            try:
+                download(url, dest, h)
+                done += 1
+            except Exception as e:
+                log(f"  ! {name}: {e}")
+            if (done + skipped) % 200 == 0:
+                log(f"  ... {done + skipped}/{total}")
+        log(f"Assets: {done} new, {skipped} cached.")
+
+    log("Done.")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python download_mc.py <target_dir>")
+        sys.exit(1)
+    main(sys.argv[1])

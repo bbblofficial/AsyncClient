@@ -28,5 +28,6 @@ exit /b 0
 :nopython
 echo Python 3 is required but was not found.
 echo Download it from https://www.python.org/downloads/
+echo Make sure to check "Add Python to PATH" during install.
 pause
 exit /b 1

@@ -33,6 +33,16 @@ jobs:
       - name: Build mod
         run: $HOME/gradle-2.14.1/bin/gradle setupCIWorkspace build --no-daemon --stacktrace
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download Minecraft 1.8.8 + Forge + assets
+        run: |
+          mkdir -p dist
+          python3 download_mc.py dist/mc-data
+
       - name: Package
         run: |
           mkdir -p dist/mods
@@ -41,12 +51,14 @@ jobs:
           cp "$JAR" dist/mods/OryvexClient.jar
           cp start.bat dist/start.bat
           cp launcher.py dist/launcher.py
-          ls -lh dist dist/mods
+          echo "--- dist size ---"
+          du -sh dist
+          du -sh dist/mc-data/*
 
       - name: Create ZIP
         run: |
           cd dist
-          zip -r ../OryvexClient.zip .
+          zip -r -q ../OryvexClient.zip .
           cd ..
           ls -lh OryvexClient.zip
 
@@ -55,3 +67,5 @@ jobs:
         with:
           name: OryvexClient
           path: OryvexClient.zip
+          compression-level: 0
+          retention-days: 7
