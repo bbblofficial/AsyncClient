@@ -43,4 +43,3 @@ jobs:
             build/libs/*.jar
             !build/libs/*-sources.jar
           if-no-files-found: error
-          if-no-files-found: error
