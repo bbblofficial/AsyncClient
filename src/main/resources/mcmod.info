@@ -1,0 +1,10 @@
+[
+  {
+    "modid": "oryvexclient",
+    "name": "OryvexClient",
+    "description": "Clean PvP client for Minecraft 1.8.8 with HUD modules and a custom UI.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "authorList": ["Oryvex"]
+  }
+]
