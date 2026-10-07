@@ -8,10 +8,10 @@ Toggle Sprint, Fullbright, Zoom, a custom main menu and a drag-and-drop HUD edit
 
 ## Build on GitHub
 Push this repo -> Actions -> *Build OryvexClient* -> download the **OryvexClient** artifact
-(`OryvexClient.jar` + `start_client.bat`).
+(`client.jar` + `start.bat`).
 
 ## Install
-Run `start_client.bat` (installs Forge 1.8.8 if missing and copies the jar to `.minecraft/mods`),
+Run `start.bat` (installs the bundled Forge 1.8.8 if missing and copies the jar to `.minecraft/mods`),
 then start the **forge** profile in the Minecraft Launcher.
 
 ## Local build
