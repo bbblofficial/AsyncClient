@@ -35,11 +35,12 @@ jobs:
       - name: Build
         run: gradle setupCIWorkspace build --no-daemon --stacktrace
 
-        - name: Upload jar
-          uses: actions/upload-artifact@v4
-          with:
-            name: AsyncMenus-jar
-            path: |
-              build/libs/*.jar
-              !build/libs/*-sources.jar
-            if-no-files-found: error
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: AsyncMenus-jar
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+          if-no-files-found: error
+          if-no-files-found: error
